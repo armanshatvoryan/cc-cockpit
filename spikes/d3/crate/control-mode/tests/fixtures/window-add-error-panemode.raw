@@ -1,0 +1,36 @@
+%begin 1781792449 277 0
+%end 1781792449 277 0
+%session-changed $0 d3
+%output %0 \033]133;D;0\033\134
+%output %0 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134
+%output %0 \033]133;A\033\134
+%output %0 \033[1m\033[7m%\033[27m\033[1m\033[0m                                                                               \015 \015\033]133;D;0\033\134
+%output %0 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134
+%output %0 \033]133;A\033\134
+%output %0 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % \033[K\033[?2004h
+%begin 1781792450 282 1
+%end 1781792450 282 1
+%session-window-changed $0 @1
+%window-add @1
+%window-renamed @1 tmux
+%output %1 \033]133;D;0\033\134
+%output %1 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
+%output %1 \033[1m\033[7m%\033[27m\033[1m\033[0m                                                                               \015 \015
+%output %1 \033]133;D;0\033\134
+%output %1 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
+%output %1 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % \033[K\033[?2004h
+%window-renamed @1 zsh
+%begin 1781792451 287 1
+parse error: unknown command: this-is-not-a-command
+%error 1781792451 287 1
+%begin 1781792452 288 1
+%end 1781792452 288 1
+%pane-mode-changed %1
+%window-renamed @1 [tmux]
+%begin 1781792452 291 1
+%end 1781792452 291 1
+%pane-mode-changed %1
+%window-renamed @1 zsh
+%begin 1781792454 294 1
+%end 1781792454 294 1
+%exit
