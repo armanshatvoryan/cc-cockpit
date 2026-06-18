@@ -1,0 +1,46 @@
+  [1m│ test corpus[0m            │ claude-mem plugins; MCPs; ≥10 projects; ≥15 skills. Acceptance tests must pass against this  │
+  │                        │ corpus.                                                                                      │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ [1mOffline-first[0m          │ No cloud dependency for core functionality. Telegram is opt-in add-on only. Inventory reads  │
+  │                        │ local files only.                                                                            │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ [1mApp bundle size[0m        │ Tauri target: ≤50 MB installed. No Electron (150–300 MB typical).                            │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ [1mSession resilience[0m     │ GUI crash: tmux sessions continue unaffected. Cockpit restores full state on next launch by  │
+  │                        │ reading tmux session state.                                                                  │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ [1mAtomic config writes[0m   │ Write to [38;5;153m<path>.cockpit-tmp[39m → [38;5;153mmv[39m/rename to target. Enforced for all config mutations (Pillar │
+  │                        │  2) and team template saves.                                                                 │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ [1mCoordination daemon [0m   │ If file-mailbox daemon crashes mid-team: role panes remain live; mailbox files are durable   │
+  │ [1mcrash recovery[0m         │ on disk; daemon restart resumes from last unprocessed inbox. No lost messages.               │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ [1mD6 graceful degrade[0m    │ If live subagent-state ingestion unreliable (D6 spike outcome): agent-tree shows roles only  │
+  │                        │ — never stale/wrong state; prefer "unknown" over wrong.                                      │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ [1mSecurity[0m               │ No cockpit process has elevated privileges. Config writes use file-system permissions of     │
+  │                        │ running user. MCP installs run as user; no sudo.                                             │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ [1mAccessibility[0m          │ Status icons use shape + colour (not colour-only). Keyboard navigation for all primary       │
+  │                        │ actions (tab switch, pane focus, inventory toggle).                                          │
+  └────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+[38;5;246m✻[39m [38;5;246mCrunched for 3m 37s[39m
+
+
+[38;5;220m╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│[39m [1m[38;5;220mShutdown request from team-lead[0m                                                                                            [38;5;220m│
+│[39m                                                                                                                            [38;5;220m│
+│[39m Reason: Switching to synchronous dispatch model; re-spawning fresh. Stand down.                                            [38;5;220m│
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+[38;5;231m⏺[39m Standing down.
+
+[38;5;246m✻[39m [38;5;246mBaked for 3s[39m
+
+[38;5;110m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[38;5;16m[48;5;110m @po [38;5;110m[49m──
+❯ [39m
+[38;5;110m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;172m[CAVEMAN][38;5;246m [38;5;172m⛏ 121.7k[39m
+  [38;5;220m⏵⏵ auto mode on[38;5;246m (shift+tab to cycle) · ← for agents[39m
