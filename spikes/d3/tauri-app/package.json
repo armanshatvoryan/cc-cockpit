@@ -1,0 +1,14 @@
+{
+  "name": "cc-cockpit-d3-tauri",
+  "private": true,
+  "version": "0.1.0",
+  "description": "D3 spike: Tauri 2 shell wrapping the control-mode engine + SolidJS frontend.",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0"
+  }
+}

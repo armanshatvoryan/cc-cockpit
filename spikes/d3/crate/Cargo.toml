@@ -1,0 +1,6 @@
+# Workspace for the D3 spike Rust crates (shared target dir).
+# tauri-app is NOT a workspace member: it carries the heavy Tauri dep tree and
+# is built on its own so the fast control-mode + engine loop stays fast.
+[workspace]
+resolver = "2"
+members = ["control-mode", "engine"]

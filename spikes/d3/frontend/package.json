@@ -1,0 +1,26 @@
+{
+  "name": "cc-cockpit-d3-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "D3 spike: SolidJS XtermHost wired to the Tauri control-mode bridge.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@solidjs/router": "^0.15.3",
+    "@tauri-apps/api": "^2.5.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-webgl": "^0.18.0",
+    "@xterm/xterm": "^5.5.0",
+    "solid-js": "^1.9.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^6.0.7",
+    "vite-plugin-solid": "^2.11.0"
+  }
+}

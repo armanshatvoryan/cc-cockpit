@@ -1,0 +1,22 @@
+[package]
+name = "cc-cockpit-d3"
+version = "0.1.0"
+edition = "2021"
+description = "D3 spike: minimal Tauri 2 app wrapping the control-mode engine."
+
+[lib]
+name = "cc_cockpit_d3_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Reuse the PROVEN control-mode parser + engine verbatim (path deps to the
+# sibling spike crates — same code the headless live-bridge exercised).
+cockpit-control-mode = { path = "../../crate/control-mode" }
+cockpit-engine = { path = "../../crate/engine" }
