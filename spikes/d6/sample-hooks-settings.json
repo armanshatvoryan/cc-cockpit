@@ -1,0 +1,48 @@
+{
+  "_comment": "SAMPLE ONLY — the cockpit hook-shim entries the backend would MERGE into the real ~/.claude/settings.json via the §5 safe-write + confirm-diff path. This is NOT the full settings.json; it shows only the `hooks` sub-tree additions. The real box already wires PermissionRequest + PreToolUse(AskUserQuestion) + SessionStart (verified 2026-06-18) — the cockpit ADDS Stop + Notification + UserPromptSubmit + PostToolUse + SessionEnd shims, and APPENDS (does not replace) a shim entry under the existing PermissionRequest/PreToolUse arrays. Replace COCKPIT_SHIM with the abs path to cockpit-hook-shim.sh.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "COCKPIT_SHIM Stop" }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          { "type": "command", "command": "COCKPIT_SHIM Notification" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "COCKPIT_SHIM UserPromptSubmit" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "COCKPIT_SHIM PostToolUse" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "COCKPIT_SHIM SessionEnd" }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          { "type": "command", "command": "COCKPIT_SHIM PermissionRequest" }
+        ]
+      }
+    ]
+  }
+}
