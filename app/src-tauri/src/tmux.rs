@@ -104,6 +104,51 @@ pub fn ensure_session() -> Result<(), String> {
     Ok(())
 }
 
+/// Is the cockpit server alive AND responsive? A *poisoned* socket (left behind
+/// by a crashed/force-quit prior run + orphaned `-CC` control clients) answers
+/// every command with "server exited unexpectedly" while looking present — so we
+/// probe with a real query that only succeeds against a live server.
+pub fn server_healthy() -> bool {
+    match tmux(&["list-panes", "-t", SESSION, "-F", "#{pane_id}"]) {
+        Ok(o) => o.ok() && !o.trimmed().is_empty(),
+        Err(_) => false,
+    }
+}
+
+/// Forcibly reset a poisoned `-L cockpit` socket: kill orphaned control clients,
+/// kill the (possibly half-dead) server, and remove the stale socket file. Scoped
+/// to our private socket only — never the default socket.
+pub fn reset_server() {
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(
+            "pkill -f 'tmux -L cockpit -C' 2>/dev/null; \
+             tmux -L cockpit kill-server 2>/dev/null; \
+             rm -f \"${TMPDIR:-/tmp}tmux-$(id -u)/cockpit\" 2>/dev/null; true",
+        )
+        .status();
+}
+
+/// Ensure a HEALTHY cockpit session exists, self-healing a poisoned socket.
+/// Create → verify responsive → on failure hard-reset and retry. This is what
+/// `init` calls so a prior force-quit/crash can't brick startup.
+pub fn ensure_healthy_session() -> Result<(), String> {
+    for _ in 0..3 {
+        let _ = ensure_session();
+        if server_healthy() {
+            return Ok(());
+        }
+        reset_server();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    ensure_session()?;
+    if server_healthy() {
+        Ok(())
+    } else {
+        Err("cockpit tmux server is unhealthy after reset attempts".into())
+    }
+}
+
 /// Shell-single-quote a string for safe interpolation into a `send-keys`
 /// command line (cwd, flags). Escapes embedded single quotes with the `'\''`
 /// idiom. Mirrors the engine's quoting so behaviour is consistent.

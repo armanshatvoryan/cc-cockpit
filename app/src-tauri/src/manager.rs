@@ -140,7 +140,7 @@ impl SessionManager {
     pub fn init(
         &mut self,
     ) -> Result<std::sync::mpsc::Receiver<cockpit_engine::Outbound>, String> {
-        tmux::ensure_session()?;
+        tmux::ensure_healthy_session()?;
         let (client, rx) =
             ControlClient::attach(tmux::SOCKET, SESSION).map_err(|e| e.to_string())?;
         self.client = Some(client);
