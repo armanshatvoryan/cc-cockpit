@@ -15,7 +15,6 @@
 import { onCleanup, onMount, type Component } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import {
   onPaneData,
@@ -66,14 +65,9 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
 
     term.open(hostEl);
 
-    // WebGL is best-effort: fall back to canvas if a context can't be created.
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch (e) {
-      console.warn("WebGL addon unavailable, using canvas renderer", e);
-    }
+    // NOTE: WebglAddon intentionally NOT used — it renders an all-black canvas in
+    // the macOS WKWebView. The default DOM renderer is plenty for v1 (output is
+    // already coalesced to ~1 write/pane/16ms in the backend forwarder).
 
     // Initial fit + push size to tmux so the pane lays out for our viewport.
     fit.fit();

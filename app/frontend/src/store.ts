@@ -8,7 +8,7 @@
 // The store is module-level (one cockpit window = one store). Components read
 // the solid `store` proxy and call the action functions.
 
-import { createStore, produce } from "solid-js/store";
+import { createStore, produce, reconcile as reconcileStore } from "solid-js/store";
 import { createSignal, type Accessor } from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
@@ -90,14 +90,14 @@ export function tabAttention(tab: TabInfo): "needs_input" | "working" | "none" {
 
 /** Replace tabs/panes from a fresh CockpitState and repair active/focus refs. */
 function reconcile(next: CockpitState): void {
-  setStore(
-    produce((s) => {
-      s.socket = next.socket;
-      s.session = next.session;
-      s.tabs = next.tabs;
-      s.panes = next.panes;
-    }),
-  );
+  // Patch by VALUE keyed on id so existing tab/pane objects keep their identity.
+  // Replacing the arrays (s.panes = next.panes) gives <For> brand-new references
+  // every reconcile, which tears down + rebuilds every XtermHost (terminal dies
+  // mid-paint → black panes). reconcile(...,{key}) mutates in place instead.
+  setStore("socket", next.socket);
+  setStore("session", next.session);
+  setStore("tabs", reconcileStore(next.tabs, { key: "tabId" }));
+  setStore("panes", reconcileStore(next.panes, { key: "paneId" }));
 
   // Repair active tab: keep if still present, else first tab, else null.
   const tabIds = next.tabs.map((t) => t.tabId);
@@ -153,8 +153,12 @@ export async function bootCockpit(): Promise<void> {
   });
 
   // pane:topology — any structural change → full reconcile.
+  // DEBOUNCED: a burst of layout-change events (e.g. an initial resize storm)
+  // collapses into a single reload instead of hammering list_state().
+  let topoTimer: number | undefined;
   const unTopo = await onPaneTopology(() => {
-    void refreshState();
+    if (topoTimer) clearTimeout(topoTimer);
+    topoTimer = window.setTimeout(() => void refreshState(), 120);
   });
 
   unlisteners = [unStatus, unTopo];
