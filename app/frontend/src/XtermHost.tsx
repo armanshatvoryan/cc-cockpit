@@ -21,6 +21,7 @@ import {
   onPaneData,
   paneResize,
   paneSendKeys,
+  warmStart,
   type PaneDataPayload,
 } from "./ipc";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -85,8 +86,23 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       if (p.paneId !== paneId) return;
       term.write(b64ToBytes(p.bytesB64));
     }).then((u) => {
-      if (disposed) u();
-      else unlistenData = u;
+      if (disposed) {
+        u();
+        return;
+      }
+      unlistenData = u;
+      // Warm start: only AFTER the live `pane:data` listener is registered do we
+      // replay the existing screen + scrollback. The control client streams only
+      // `%output` produced after it attached, so a re-attached pane would paint
+      // blank without this. Ordering matters: the listener is live first, so any
+      // live output during the fetch isn't lost — a little duplicated tail is
+      // harmless, a fully blank pane is not. Fire once; guard the unmount race.
+      warmStart(paneId)
+        .then((w) => {
+          if (disposed || !w.bytesB64) return;
+          term.write(b64ToBytes(w.bytesB64));
+        })
+        .catch(() => {});
     });
 
     // Input: onData yields already-encoded VT (arrows/ctrl/paste) — send literal.

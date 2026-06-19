@@ -64,6 +64,10 @@ export interface SplitPaneResult {
   layout: string;
 }
 
+export interface WarmStartPayload {
+  bytesB64: string;
+}
+
 // ── Event payloads ──────────────────────────────────────────────────────────
 
 export interface PaneDataPayload {
@@ -167,6 +171,16 @@ export function interruptPane(paneId: string): Promise<void> {
 /** Full state snapshot (called on every topology event to reconcile). */
 export function listState(): Promise<CockpitState> {
   return invoke<CockpitState>("list_state");
+}
+
+/**
+ * Warm-start replay for a pane: returns its current screen + scrollback
+ * (escape-aware) base64-encoded. Called once on XtermHost mount so a pane the
+ * GUI re-attaches to paints its existing content instead of staying blank (the
+ * control client only streams `%output` produced AFTER it attaches).
+ */
+export function warmStart(paneId: string): Promise<WarmStartPayload> {
+  return invoke<WarmStartPayload>("warm_start", { paneId });
 }
 
 // ── Events (Rust -> FE) ───────────────────────────────────────────────────────
