@@ -1,0 +1,210 @@
+//! Headless smoke — drives the SessionManager end-to-end WITHOUT the GUI.
+//!
+//! Proves the v1 backbone works against the PRIVATE `-L cockpit` socket:
+//!   1. init      -> ensure socket + cockpit-main session, attach control client
+//!   2. create_tab -> a second tab (tmux window)
+//!   3. split_pane -> a second pane in that tab
+//!   4. launch_shell -> run `echo COCKPIT_SMOKE_OK` + `sleep 1` in a pane (NOT
+//!      real claude — no API key), exercising the send-keys + control-client path
+//!   5. list_state -> capture tabs/panes/cwd
+//!   6. poll_statuses -> classify each live pane (status heuristic)
+//!   7. teardown  -> kill the cockpit session on the PRIVATE socket only
+//!
+//! Exit 0 = every leg observed. The default tmux socket is NEVER touched; the
+//! caller (smoke script) verifies the default socket's sessions are unchanged.
+
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
+
+use base64::Engine as _;
+use cc_cockpit_lib::manager::SessionManager;
+
+fn main() {
+    let mut fail = 0;
+    let mut mgr = SessionManager::new();
+
+    // 1. init
+    let rx = match mgr.init() {
+        Ok(rx) => rx,
+        Err(e) => {
+            eprintln!("FAIL init: {e}");
+            std::process::exit(2);
+        }
+    };
+    println!("[smoke] init OK — attached to -L cockpit / cockpit-main");
+
+    // Drain the engine channel on a thread; collect a flag if our token echoes.
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let token = "COCKPIT_SMOKE_OK";
+    let (saw_tx, saw_rx) = std::sync::mpsc::channel::<bool>();
+    std::thread::spawn(move || {
+        let mut saw = false;
+        loop {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(cockpit_engine::Outbound::PaneData { bytes_b64, .. }) => {
+                    let raw = b64.decode(bytes_b64.as_bytes()).unwrap_or_default();
+                    let text = String::from_utf8_lossy(&raw);
+                    if text.contains("COCKPIT_SMOKE_OK") && !saw {
+                        saw = true;
+                        let _ = saw_tx.send(true);
+                    }
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    // keep waiting until the channel closes
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+
+    // 2. create_tab
+    let tab = match mgr.create_tab(Some("smoke-tab")) {
+        Ok(t) => {
+            println!(
+                "[smoke] create_tab OK — tabId={} window={} pane={}",
+                t.tab_id, t.tmux_window_id, t.pane_id
+            );
+            t
+        }
+        Err(e) => {
+            eprintln!("FAIL create_tab: {e}");
+            mgr.teardown();
+            std::process::exit(3);
+        }
+    };
+
+    // 3. split_pane (split the new tab's pane horizontally)
+    let split = match mgr.split_pane(&tab.pane_id, "h") {
+        Ok(s) => {
+            println!(
+                "[smoke] split_pane OK — newPane={} layout={}",
+                s.pane_id, s.layout
+            );
+            s
+        }
+        Err(e) => {
+            eprintln!("FAIL split_pane: {e}");
+            mgr.teardown();
+            std::process::exit(4);
+        }
+    };
+
+    // 4. launch_shell + send a marker command (echo + sleep), NOT real claude.
+    if let Err(e) = mgr.launch_shell(&tab.pane_id, "/tmp") {
+        eprintln!("FAIL launch_shell: {e}");
+        fail += 1;
+    } else {
+        println!("[smoke] launch_shell OK (cd /tmp in {})", tab.pane_id);
+    }
+    // Drive an echo marker + a brief sleep through the control-client path so we
+    // exercise the same send-keys round-trip the frontend will use.
+    if let Err(e) = mgr.pane_send_keys(&tab.pane_id, "echo COCKPIT_SMOKE_OK && sleep 1") {
+        eprintln!("FAIL pane_send_keys: {e}");
+        fail += 1;
+    }
+    // Enter (CR).
+    let _ = mgr.pane_send_keys(&tab.pane_id, "\r");
+
+    // Give the echo time to round-trip back through %output.
+    let echoed = saw_rx.recv_timeout(Duration::from_secs(3)).unwrap_or(false);
+    if echoed {
+        println!("[smoke] echo round-trip OK — saw '{token}' in %output");
+    } else {
+        eprintln!("[smoke] WARN echo round-trip not observed within 3s");
+        fail += 1;
+    }
+
+    // 5. list_state
+    match mgr.list_state() {
+        Ok(st) => {
+            println!(
+                "[smoke] list_state OK — {} tab(s), {} pane(s)",
+                st.tabs.len(),
+                st.panes.len()
+            );
+            for t in &st.tabs {
+                println!(
+                    "         tab {} (win {} idx {}) name='{}' panes={:?}",
+                    t.tab_id, t.tmux_window_id, t.index, t.name, t.pane_ids
+                );
+            }
+            for p in &st.panes {
+                println!(
+                    "         pane {} tab={} cwd='{}' dead={} status={}",
+                    p.pane_id, p.tab_id, p.cwd, p.dead, p.status
+                );
+            }
+            // Expect at least 2 tabs (bootstrap + smoke-tab) and the split pane.
+            if st.tabs.len() < 2 {
+                eprintln!("FAIL expected >=2 tabs, got {}", st.tabs.len());
+                fail += 1;
+            }
+            if !st.panes.iter().any(|p| p.pane_id == split.pane_id) {
+                eprintln!("FAIL split pane {} not in state", split.pane_id);
+                fail += 1;
+            }
+        }
+        Err(e) => {
+            eprintln!("FAIL list_state: {e}");
+            fail += 1;
+        }
+    }
+
+    // 6. poll_statuses — classify each live pane.
+    let statuses = mgr.poll_statuses();
+    println!("[smoke] poll_statuses OK — {} status change(s):", statuses.len());
+    for s in &statuses {
+        println!(
+            "         {} -> {} (ambiguous={}, recencyMs={})",
+            s.pane_id, s.status, s.ambiguous, s.recency_ms
+        );
+    }
+
+    // 6b. DEAD detection — kill the shell process in pane %2 (remain-on-exit
+    // keeps the dead pane around) and confirm the heuristic reports DEAD.
+    if let Err(e) = mgr.pane_send_keys(&split.pane_id, "exit\r") {
+        eprintln!("[smoke] WARN could not send exit to {}: {e}", split.pane_id);
+    }
+    std::thread::sleep(Duration::from_millis(800));
+    let dead_changes = mgr.poll_statuses();
+    let saw_dead = dead_changes
+        .iter()
+        .any(|s| s.pane_id == split.pane_id && s.status == "DEAD");
+    if saw_dead {
+        println!("[smoke] DEAD detection OK — {} reported DEAD", split.pane_id);
+    } else {
+        // Some shells/configs close the pane outright instead of leaving it dead;
+        // verify via list_state that the pane is gone OR flagged dead.
+        let gone_or_dead = match mgr.list_state() {
+            Ok(st) => st
+                .panes
+                .iter()
+                .find(|p| p.pane_id == split.pane_id)
+                .map(|p| p.dead)
+                .unwrap_or(true),
+            Err(_) => false,
+        };
+        if gone_or_dead {
+            println!(
+                "[smoke] DEAD detection OK — {} is gone/dead in state",
+                split.pane_id
+            );
+        } else {
+            eprintln!("[smoke] WARN DEAD not observed for {}", split.pane_id);
+            fail += 1;
+        }
+    }
+
+    // 7. teardown — kill the cockpit session on the PRIVATE socket only.
+    mgr.teardown();
+    println!("[smoke] teardown OK — cockpit session killed on -L cockpit");
+
+    if fail == 0 {
+        println!("\nSMOKE: PASS");
+        std::process::exit(0);
+    } else {
+        println!("\nSMOKE: {fail} leg(s) FAILED");
+        std::process::exit(1);
+    }
+}
