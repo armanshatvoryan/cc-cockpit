@@ -119,12 +119,18 @@ pub fn server_healthy() -> bool {
 /// kill the (possibly half-dead) server, and remove the stale socket file. Scoped
 /// to our private socket only — never the default socket.
 pub fn reset_server() {
+    // NOTE socket path: tmux stores its socket at `${TMUX_TMPDIR:-/tmp}/tmux-<uid>/<name>`
+    // — it uses /tmp, NOT $TMPDIR (which on macOS is a per-process /var/folders dir).
+    // The earlier `${TMPDIR}tmux-…` target never matched the real file; kill-server
+    // already unlinks the socket on a live server, and tmux unlinks a stale socket
+    // itself on the next new-session, so this rm is only belt-and-suspenders — but
+    // point it at the CORRECT path so it actually helps when it must.
     let _ = Command::new("sh")
         .arg("-c")
         .arg(
             "pkill -f 'tmux -L cockpit -C' 2>/dev/null; \
              tmux -L cockpit kill-server 2>/dev/null; \
-             rm -f \"${TMPDIR:-/tmp}tmux-$(id -u)/cockpit\" 2>/dev/null; true",
+             rm -f \"${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/cockpit\" 2>/dev/null; true",
         )
         .status();
 }
