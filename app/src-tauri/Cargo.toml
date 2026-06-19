@@ -13,6 +13,9 @@ name = "cc-cockpit"
 version = "0.1.0"
 edition = "2021"
 description = "CC Cockpit — desktop-over-tmux multitask cockpit (v1 backbone)."
+# Two binaries exist (the GUI app `cc-cockpit` from src/main.rs, and the headless
+# `smoke` test). `tauri dev` runs a bare `cargo run`, so name the default.
+default-run = "cc-cockpit"
 
 [lib]
 name = "cc_cockpit_lib"
