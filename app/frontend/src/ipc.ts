@@ -200,3 +200,12 @@ export function onPaneStatus(
 ): Promise<UnlistenFn> {
   return listen<PaneStatusPayload>("pane:status", (e) => handler(e.payload));
 }
+
+/**
+ * Fired after the backend re-heals a vanished tmux server mid-run (re-attached a
+ * fresh control client). The frontend should reload state — the reconnected
+ * session has new panes/tabs, which remount and warm-start.
+ */
+export function onCockpitReconnected(handler: () => void): Promise<UnlistenFn> {
+  return listen("cockpit:reconnected", () => handler());
+}

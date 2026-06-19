@@ -196,6 +196,47 @@ fn main() {
         }
     }
 
+    // 6c. RUNTIME RECONNECT — simulate the server vanishing mid-run (force-quit /
+    // external kill), then drive a structural op through `with_reattach` and confirm
+    // it self-heals: the op succeeds AND a fresh Outbound receiver is returned (so
+    // the GUI would rebind its forwarder), and the healed server has the new tab.
+    {
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", "cockpit", "kill-server"])
+            .status();
+        std::thread::sleep(Duration::from_millis(150));
+        match mgr.with_reattach(|m| m.create_tab(Some("after-reconnect"))) {
+            Ok((t, new_rx)) => {
+                if new_rx.is_some() {
+                    println!(
+                        "[smoke] RECONNECT OK — server vanished; re-healed + re-attached; new tab {} ({})",
+                        t.tab_id, t.pane_id
+                    );
+                } else {
+                    eprintln!("[smoke] FAIL reconnect: op succeeded but no re-attach (server not seen as gone)");
+                    fail += 1;
+                }
+                match mgr.list_state() {
+                    Ok(st) if st.tabs.iter().any(|x| x.tab_id == t.tab_id) => {
+                        println!("[smoke] RECONNECT state OK — {} tab(s) after heal", st.tabs.len());
+                    }
+                    Ok(_) => {
+                        eprintln!("[smoke] FAIL reconnect: new tab missing after heal");
+                        fail += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("[smoke] FAIL reconnect list_state: {e}");
+                        fail += 1;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[smoke] FAIL reconnect: {e}");
+                fail += 1;
+            }
+        }
+    }
+
     // 7. teardown — kill the cockpit session on the PRIVATE socket only.
     mgr.teardown();
     println!("[smoke] teardown OK — cockpit session killed on -L cockpit");

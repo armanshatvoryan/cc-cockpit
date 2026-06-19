@@ -20,6 +20,7 @@ import {
   listState,
   onPaneStatus,
   onPaneTopology,
+  onCockpitReconnected,
   type CockpitState,
   type PaneInfo,
   type TabInfo,
@@ -161,7 +162,14 @@ export async function bootCockpit(): Promise<void> {
     topoTimer = window.setTimeout(() => void refreshState(), 120);
   });
 
-  unlisteners = [unStatus, unTopo];
+  // cockpit:reconnected — backend re-healed a vanished server. Reload state; the
+  // reconnected session's panes have new ids, so <For> remounts them (warm-start).
+  const unReconnect = await onCockpitReconnected(() => {
+    setStore("error", null);
+    void refreshState();
+  });
+
+  unlisteners = [unStatus, unTopo, unReconnect];
 }
 
 /** Tear down event subscriptions (window close / HMR). */

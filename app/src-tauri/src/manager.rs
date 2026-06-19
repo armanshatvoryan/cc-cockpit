@@ -131,6 +131,20 @@ pub fn tab_id_for_index(index: u32) -> String {
     format!("tab-{index}")
 }
 
+/// Does this tmux error mean the server or our session is gone — so a re-heal +
+/// re-attach would recover? Matches the admin-path failure strings that warrant a
+/// reconnect, and deliberately does NOT match "can't find window/pane" (a stale
+/// target on a live server, where reconnecting wouldn't help).
+pub fn is_server_gone(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("no server running")
+        || e.contains("can't find session")
+        || e.contains("session not found")
+        || e.contains("no current session")
+        || e.contains("lost server")
+        || e.contains("server exited")
+}
+
 // ── SessionManager ───────────────────────────────────────────────────────────
 
 /// Owns the live control client. The in-memory model is intentionally derived
@@ -165,6 +179,39 @@ impl SessionManager {
 
     pub fn is_attached(&self) -> bool {
         self.client.is_some()
+    }
+
+    /// Run an admin/control op; if it fails because the tmux server or our session
+    /// vanished mid-run (force-quit, crash, external `kill`), re-heal the session,
+    /// RE-ATTACH a fresh control client, and retry the op ONCE. Returns the op
+    /// result plus — when a reconnect happened — the NEW `Outbound` receiver so the
+    /// caller can rebind the event forwarder to it (the old forwarder ends on its
+    /// own when the dropped client's stream disconnects).
+    ///
+    /// `op` may run twice, so it must be safe to retry: the first run failed before
+    /// mutating tmux (the server was already gone), so a single retry is sound.
+    pub fn with_reattach<T>(
+        &mut self,
+        op: impl Fn(&mut Self) -> Result<T, String>,
+    ) -> Result<(T, Option<std::sync::mpsc::Receiver<cockpit_engine::Outbound>>), String> {
+        match op(self) {
+            Ok(v) => Ok((v, None)),
+            Err(e) if is_server_gone(&e) => {
+                // The server vanished, so our control client is now orphaned. A
+                // lingering `tmux -C` client keeps the dead socket "present but
+                // broken" and poisons a freshly-created server ("server exited
+                // unexpectedly" on the next command) — and its graceful Drop would
+                // block on child.wait(). Force-kill it FIRST so re-heal sees a clean
+                // socket and the drop returns immediately, THEN re-attach + retry.
+                if let Some(mut dead) = self.client.take() {
+                    dead.kill();
+                }
+                let rx = self.init()?;
+                let v = op(self)?;
+                Ok((v, Some(rx)))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn client_mut(&mut self) -> Result<&mut ControlClient, String> {
@@ -720,5 +767,19 @@ mod tests {
     fn trim_blank_edges_all_blank_is_empty() {
         assert_eq!(trim_blank_edges("\n\n\n"), "");
         assert_eq!(trim_blank_edges("\x1b[0m\n  \n"), "");
+    }
+
+    #[test]
+    fn server_gone_detection() {
+        // Real admin-path failures that warrant a reconnect.
+        assert!(is_server_gone(
+            "tmux [\"new-window\"] failed (exit 1): no server running on /private/tmp/tmux-501/cockpit"
+        ));
+        assert!(is_server_gone("can't find session: cockpit-main"));
+        assert!(is_server_gone("server exited unexpectedly"));
+        // NOT server-gone: a stale target on a live server — reconnect won't help.
+        assert!(!is_server_gone("can't find window: cockpit-main:7"));
+        assert!(!is_server_gone("can't find pane: %42"));
+        assert!(!is_server_gone("duplicate session: cockpit-main"));
     }
 }

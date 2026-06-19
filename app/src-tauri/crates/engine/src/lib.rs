@@ -161,6 +161,15 @@ impl ControlClient {
             let _ = h.join();
         }
     }
+
+    /// Force-kill the underlying `tmux -C` child (SIGKILL). Use when the server is
+    /// already gone: a graceful `detach-client` would never be answered and the
+    /// child can linger as an orphan that poisons a freshly-created socket, while
+    /// the `child.wait()` in `shutdown()`/`Drop` would block. Killing first makes
+    /// the subsequent drop return immediately (the child is already reaped).
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+    }
 }
 
 impl Drop for ControlClient {

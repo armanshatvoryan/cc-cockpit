@@ -99,11 +99,13 @@ fn cockpit_init(app: AppHandle, state: State<'_, AppState>) -> Result<CockpitSta
         mgr.init()?
     };
 
-    // Start background tasks once.
+    // ONE forwarder per attach. A later reconnect spawns another and the prior one
+    // ends on its own when its dropped client's stream disconnects, so this is not
+    // gated by `started` — only the singleton poller is.
+    spawn_forwarder(app.clone(), rx);
     {
         let mut started = state.started.lock().unwrap();
         if !*started {
-            spawn_forwarder(app.clone(), rx);
             spawn_status_poller(app.clone(), state.mgr.clone());
             *started = true;
         }
@@ -113,28 +115,64 @@ fn cockpit_init(app: AppHandle, state: State<'_, AppState>) -> Result<CockpitSta
     mgr.list_state()
 }
 
-#[tauri::command]
-fn create_tab(state: State<'_, AppState>, name: Option<String>) -> Result<CreateTabResult, String> {
-    let mut mgr = state.mgr.lock().unwrap();
-    mgr.create_tab(name.as_deref())
+/// Run a SessionManager op with automatic mid-run reconnect. On a server-gone
+/// error the manager re-heals + re-attaches and retries the op once; we then
+/// rebind the event forwarder to the fresh `Outbound` stream and notify the
+/// frontend (`cockpit:reconnected`) so it reloads state and panes repaint via
+/// warm-start. The happy path adds zero overhead (only the failure branch heals).
+fn with_reconnect<T>(
+    app: &AppHandle,
+    state: &AppState,
+    op: impl Fn(&mut SessionManager) -> Result<T, String>,
+) -> Result<T, String> {
+    let (res, new_rx) = {
+        let mut mgr = state.mgr.lock().unwrap();
+        mgr.with_reattach(op)?
+    };
+    if let Some(rx) = new_rx {
+        spawn_forwarder(app.clone(), rx);
+        let _ = app.emit("cockpit:reconnected", ());
+    }
+    Ok(res)
 }
 
 #[tauri::command]
-fn close_tab(state: State<'_, AppState>, tab_id: String, force: bool) -> Result<CloseTabResult, String> {
-    let mut mgr = state.mgr.lock().unwrap();
-    mgr.close_tab(&tab_id, force)
+fn create_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: Option<String>,
+) -> Result<CreateTabResult, String> {
+    with_reconnect(&app, &state, |mgr| mgr.create_tab(name.as_deref()))
 }
 
 #[tauri::command]
-fn split_pane(state: State<'_, AppState>, pane_id: String, dir: String) -> Result<SplitPaneResult, String> {
-    let mut mgr = state.mgr.lock().unwrap();
-    mgr.split_pane(&pane_id, &dir)
+fn close_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    force: bool,
+) -> Result<CloseTabResult, String> {
+    with_reconnect(&app, &state, |mgr| mgr.close_tab(&tab_id, force))
 }
 
 #[tauri::command]
-fn close_pane(state: State<'_, AppState>, pane_id: String, mode: String) -> Result<(), String> {
-    let mut mgr = state.mgr.lock().unwrap();
-    mgr.close_pane(&pane_id, &mode)
+fn split_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: String,
+    dir: String,
+) -> Result<SplitPaneResult, String> {
+    with_reconnect(&app, &state, |mgr| mgr.split_pane(&pane_id, &dir))
+}
+
+#[tauri::command]
+fn close_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: String,
+    mode: String,
+) -> Result<(), String> {
+    with_reconnect(&app, &state, |mgr| mgr.close_pane(&pane_id, &mode))
 }
 
 #[tauri::command]
@@ -174,9 +212,10 @@ fn interrupt_pane(state: State<'_, AppState>, pane_id: String) -> Result<(), Str
 }
 
 #[tauri::command]
-fn list_state(state: State<'_, AppState>) -> Result<CockpitState, String> {
-    let mgr = state.mgr.lock().unwrap();
-    mgr.list_state()
+fn list_state(app: AppHandle, state: State<'_, AppState>) -> Result<CockpitState, String> {
+    // Routed through reconnect: a passive refresh after the server died re-heals
+    // the session and reloads, so the UI recovers even without a structural action.
+    with_reconnect(&app, &state, |mgr| mgr.list_state())
 }
 
 /// Warm-start replay for one pane: return the pane's current screen + scrollback
