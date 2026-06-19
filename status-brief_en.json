@@ -1,0 +1,62 @@
+{
+  "title": "CC Cockpit — Build Status<br><span class=\"accent\">Spec Final · Both Spikes Green</span>",
+  "subtitle": "Where the Claude Code cockpit stands after the dev-team run: a finalized build spec, both v1 risk-gates proven, and exactly what you need to do to keep going.",
+  "cover": {
+    "monogram": "CC",
+    "org": "Claude Code Cockpit<br>Internal Build",
+    "presented_by": "Built by the <b>lead-orchestrated dev-team</b> &nbsp;·&nbsp; product-owner · designer · dev · frontend · qa",
+    "metrics": [
+      {"value": "2<span class=\"u\">/2</span>", "label": "Spikes green"},
+      {"value": "15", "label": "Features specced"},
+      {"value": "13<span class=\"u\">/13</span>", "label": "D3 parser tests"},
+      {"value": "17", "label": "Risks logged"},
+      {"value": "3", "label": "Corpus fixes"}
+    ],
+    "footnote": "Prepared 18 June 2026  ·  Internal tooling status"
+  },
+  "doc_meta": {
+    "rows": [
+      {"label": "Repo", "value": "~/Workflows/cc-cockpit/ (standalone git, @ 12dd232)"},
+      {"label": "Spec", "value": "docs/plans/2026-06-18-cc-cockpit-spec.md + 5 sections (prd / design / backend / frontend / qa)"},
+      {"label": "Stack", "value": "Tauri (Rust) + SolidJS + xterm.js over tmux control-mode; macOS, Claude Max (no API-key infra)"},
+      {"label": "Prepared", "value": "18 June 2026"}
+    ]
+  },
+  "verdict_headline": "The spec is FINAL and both v1 risk-gates passed GREEN. The backbone build is unblocked — only two manual confirmation passes stand between here and v1.",
+  "verdict_sub": "The two hardest unknowns are de-risked with real, tested code: live per-pane state reading (D6) and rendering a real Claude TUI through tmux control-mode (D3). Nothing is running on the agent side now; the next moves are yours.",
+  "hero_numbers": [
+    {"value": "GREEN", "label": "D6 spike", "note": "Live agent-state parser scored 4/4 on real Claude output captures; hook shim + pane mapping work."},
+    {"value": "GREEN", "label": "D3 spike", "note": "tmux control-mode parser passed 13/13 tests vs real frames; Tauri + SolidJS both build clean."},
+    {"value": "3", "label": "Corpus fixes", "note": "Reading the real machine caught 3 spec-vs-reality gaps before any code was written."},
+    {"value": "0", "label": "Lines of v1", "note": "Backbone not started — it waits behind the two spike gates, both now passed."}
+  ],
+  "tier_ladder": [
+    {"rank": 1, "source": "v1 — Multiplexing backbone (P1-F1…F6)", "tier": "Tier 1", "why": "Tabs + tiled panes over tmux; launch / switch / kill / take-over CC sessions; per-pane status; attention routing. Daily-driver value, lowest risk. Builds behind the two passed spikes."},
+    {"rank": 2, "source": "v2 — Inventory mission-control (P2-F1…F5)", "tier": "Tier 2", "why": "One panel to browse / enable / disable / configure skills + subagents + plugins + MCP across global + project. The clearest whitespace — no tool nails it. Gated by the config-safety test suite."},
+    {"rank": 3, "source": "v3 — Lead-orchestrated teams (P3-F1…F5)", "tier": "Tier 3", "why": "Saveable team templates + a file mailbox a lead routes work through. Second whitespace gap. Most ambitious; needs v1 + benefits from v2."}
+  ],
+  "charts": [
+    {
+      "id": "progress",
+      "type": "barh",
+      "title": "Milestone progress — done vs not started",
+      "unit": "%",
+      "items": [
+        {"label": "Spec (PO → QA)", "value": 100, "color": "navy"},
+        {"label": "Gate 1 + Gate 2", "value": 100, "color": "navy"},
+        {"label": "D6 spike (live-state)", "value": 100, "color": "gold"},
+        {"label": "D3 spike (xterm/tmux)", "value": 100, "color": "gold"},
+        {"label": "v1 backbone", "value": 0, "color": "grey"},
+        {"label": "v2 inventory", "value": 0, "color": "grey"},
+        {"label": "v3 teams", "value": 0, "color": "grey"}
+      ]
+    }
+  ],
+  "ui": {
+    "kicker": "CC COCKPIT · BUILD",
+    "tag": "STATUS BRIEF",
+    "ladder_title": "Build order — what ships when",
+    "footer": "CC Cockpit · Build Status — 18 June 2026"
+  },
+  "body_markdown": "## What's done\n\nThe dev-team ran end-to-end as a lead-orchestrated team (star topology): product-owner decomposed the work, two human gates locked scope and stack, then designer + backend + frontend designed in parallel, QA wrote the test + risk plan, and two feasibility spikes proved the riskiest unknowns.\n\n{{CHART:progress}}\n\n- **Spec is FINAL** — `docs/plans/2026-06-18-cc-cockpit-spec.md` plus five companion sections (PRD, design, backend, frontend, QA). 15 features with testable acceptance criteria, a 17-item risk register, a config-safety test suite, and a per-feature native-overlap go/no-go gate.\n- **Repo scaffolded** — `~/Workflows/cc-cockpit/`, standalone git at commit `12dd232`. Rust 1.96 installed.\n- **Both v1 spike gates GREEN**, with real tested code in `cc-cockpit/spikes/{d6,d3}/`.\n\n::: reconciled | Why this is solid ground\nThe two spikes weren't paper exercises — they ran against the real machine. D6's parser was validated on **live Claude output captures**; D3's control-mode parser passed **13 tests against real `tmux -CC` protocol frames** (re-verified independently). The two things most likely to sink the project are now proven.\n:::\n\n### Three corpus corrections (caught before coding)\n\nReading the real machine instead of the docs caught three spec-vs-reality gaps:\n\n1. **MCP config** lives in `~/.claude.json` (a 118 KB shared file, mode 600) — not `mcp.json`. Makes safe writes the top safety concern.\n2. **Plugin enable/disable** is a boolean flip in `settings.json:enabledPlugins` keyed `name@marketplace` — not a key add/remove.\n3. **Stop / Notification hooks are not wired** on this box — so the cockpit must install its own state-tracking shim.\n\n## What's left\n\n::: gap | Two manual passes block v1 — only you can run them\nThere is no API key in the agent environment, so a real Claude session can't be driven headlessly. These two checks need you at the keyboard. Both are confirmations of already-passing spikes, not open risks.\n:::\n\n- **D3 visual pass** — eyeball a real Claude TUI rendering in the actual GUI window (fidelity, throughput, detachability).\n- **D6 statistical run** — drive a real Claude session through its state transitions to produce the full accuracy numbers.\n- **Then: v1 backbone** — the six Pillar-1 features, built behind the now-passed gates, each run through the native-overlap gate.\n\n## Step-by-step — how to continue\n\n### Step 1 — D3 visual pass (~10 min)\n\nOpen the spike demo and watch a real TUI render through the cockpit bridge:\n\n```bash\ncd ~/Workflows/cc-cockpit/spikes/d3\nbash start-demo-session.sh          # spawns private session cockpit-d3, pane %0\ncd tauri-app && npm install && npm run dev   # window opens\n```\n\nIn the pane, run in turn: `vim` (alt-screen + box-drawing), `htop` (colors + live redraw), then a real `claude`. Confirm each renders cleanly. For throughput, run `cat` on a large file in one pane while typing in another. For detachability, from a separate terminal run `tmux -L cockpit-d3 split-window -t d3live -h` and watch the cockpit reflect it.\n\nTeardown when done:\n\n```bash\ntmux -L cockpit-d3 kill-server\n```\n\nIf any *correct* VT stream visibly corrupts, that's the one spec hard-fail — tell me and we reopen the Tauri decision. Nothing in the spike points there.\n\n### Step 2 — D6 statistical run (~20 min)\n\nDrive a real Claude session through its states (working → needs-input → idle → done → killed), several reps, so the parser's accuracy and latency get real numbers. The harness and parser are in `~/Workflows/cc-cockpit/spikes/d6/` (`run_spike.sh`, `parse_state.sh`, `FINDINGS.md`). Capture one real \"needs input\" prompt so its exact wording is on record.\n\n### Step 3 — green-light v1\n\nMessage me **\"build v1 backbone\"**. I'll route the six Pillar-1 features to the dev-team behind the passed gates, applying the native-overlap gate to each (P1-F2 / F4 / F5 are flagged thin-wrapper-risk vs native Claude Desktop — they get justified or cut).\n\n::: verdict | Bottom line\nSpec final, both hard gates green, repo clean. Two short manual passes from you close out v1's prerequisites — then the backbone build starts. Say \"build v1 backbone\" when ready.\n:::\n\n### Reference — where everything lives\n\n```text\ndocs/plans/2026-06-18-cc-cockpit-spec.md     # spec spine (+ section-*.md, + -spec-state.md resume point)\n~/Workflows/cc-cockpit/spikes/{d6,d3}/       # spikes + FINDINGS\n```\n"
+}

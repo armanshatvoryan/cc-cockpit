@@ -52,7 +52,7 @@ pub const IDLE_SECS: u64 = 3;
 
 /// Strip ANSI SGR (and common CSI) escapes so patterns match visible text.
 /// Mirrors the `sed 's/\x1b\[[0-9;?]*[A-Za-z]//g'` in parse_state.sh.
-fn strip_ansi(s: &str) -> String {
+pub(crate) fn strip_ansi(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
@@ -172,6 +172,18 @@ fn is_needs_option(line: &str) -> bool {
     false
 }
 
+/// Settled OS shell prompt (zsh/bash/fish): the last non-blank line ends with a
+/// conventional prompt sigil. Used ONLY as the final fallback before Unknown so
+/// the default + `Launch shell` panes (plain zsh) read IDLE instead of `?`.
+/// `line` is already ANSI-stripped by `classify`.
+fn is_shell_prompt(line: &str) -> bool {
+    let t = line.trim_end();
+    // Trailing-sigil prompts only ($ zsh/bash, % zsh, # root, ❯ pure/starship).
+    // Leading-arrow themes (oh-my-zsh `➜`) end on the command region, not a
+    // sigil, so they fall through to Unknown rather than risk a false IDLE.
+    !t.is_empty() && matches!(t.chars().last(), Some('$') | Some('%') | Some('#') | Some('❯'))
+}
+
 /// IDLE footer/prompt: `⏵⏵ auto mode on` / `shift+tab to cycle`.
 fn is_idle_marker(line: &str) -> bool {
     line.contains("auto mode on")
@@ -217,8 +229,18 @@ pub fn classify(dead: bool, raw: &str, last_activity_age: Option<u64>) -> Status
     // IDLE prompt/footer.
     let idle = last_line_matching(&tail, |l| is_idle_marker(l));
 
-    // Nothing matched at all -> ambiguous.
+    // No Claude marker matched. Before giving up to Unknown, check whether the
+    // last non-blank line is a settled OS shell prompt — those panes are
+    // first-class in the cockpit and should read IDLE, not an alarming `?`.
     if w == 0 && n == 0 && idle == 0 {
+        if tail
+            .iter()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .map_or(false, |l| is_shell_prompt(l))
+        {
+            return Status::Idle;
+        }
         return Status::Unknown;
     }
 
@@ -282,6 +304,27 @@ mod tests {
     fn idle_prompt_footer() {
         let snap = "⏺ Standing down.\n✻ Baked for 3s\n❯ \n⏵⏵ auto mode on (shift+tab to cycle)\n";
         assert_eq!(classify(false, snap, None), Status::Idle);
+    }
+
+    #[test]
+    fn shell_prompt_is_idle_not_unknown() {
+        // The default + `Launch shell` panes are plain zsh — no Claude markers.
+        let snap = "Last login: …\narmanshatvoran@MacBook-Air-Arman src-tauri % \n";
+        assert_eq!(classify(false, snap, None), Status::Idle);
+    }
+
+    #[test]
+    fn shell_prompt_variants() {
+        assert_eq!(classify(false, "user@host ~ $ \n", None), Status::Idle);
+        assert_eq!(classify(false, "root@box:/etc# \n", None), Status::Idle);
+        assert_eq!(classify(false, "~/repo ❯ \n", None), Status::Idle);
+    }
+
+    #[test]
+    fn truly_unknown_stays_unknown() {
+        // No Claude markers, no shell sigil on the last non-blank line.
+        let snap = "building target/release\ncompiling foo v0.1.0\n";
+        assert_eq!(classify(false, snap, None), Status::Unknown);
     }
 
     #[test]

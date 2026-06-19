@@ -26,6 +26,22 @@ use crate::tmux::{self, SESSION};
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
 
+/// Trim leading + trailing blank lines from a `capture-pane -e` dump (blank =
+/// empty after stripping ANSI escapes + whitespace). A fresh pane captures as a
+/// single prompt line padded with ~45 empty rows; replaying that padding paints
+/// a tall void above the prompt in the re-attached xterm. Interior blanks (real
+/// output spacing) are preserved — only the edges are trimmed.
+fn trim_blank_edges(s: &str) -> String {
+    let lines: Vec<&str> = s.split('\n').collect();
+    let is_blank = |l: &&str| crate::status::strip_ansi(l).trim().is_empty();
+    let first = lines.iter().position(|l| !is_blank(l));
+    let last = lines.iter().rposition(|l| !is_blank(l));
+    match (first, last) {
+        (Some(a), Some(b)) => lines[a..=b].join("\n"),
+        _ => String::new(), // all-blank capture → nothing to replay
+    }
+}
+
 // ── Snapshot / return DTOs (camelCase for the JS frontend) ───────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -607,7 +623,7 @@ impl SessionManager {
             pane_id,
         ])?;
         if out.ok() {
-            Ok(B64.encode(out.stdout.as_bytes()))
+            Ok(B64.encode(trim_blank_edges(&out.stdout).as_bytes()))
         } else {
             Err(out.stderr.trim().to_string())
         }
@@ -681,5 +697,28 @@ mod tests {
         assert_eq!(activity_epoch_secs("0"), None);
         assert_eq!(activity_epoch_secs("1781869938"), Some(1781869938)); // seconds
         assert_eq!(activity_epoch_secs("1781869938370"), Some(1781869938)); // ms -> s
+    }
+
+    #[test]
+    fn trim_blank_edges_drops_fresh_pane_padding() {
+        // Fresh pane: 1 leading blank, prompt, 45 trailing blanks (the void).
+        let mut s = String::from("\narmanshatvoran@host repo % ");
+        for _ in 0..45 {
+            s.push('\n');
+        }
+        // Blank LINES are dropped; the prompt line keeps its trailing space
+        // (that's where the cursor sits — only edge blank rows are noise).
+        assert_eq!(trim_blank_edges(&s), "armanshatvoran@host repo % ");
+    }
+
+    #[test]
+    fn trim_blank_edges_keeps_interior_blanks() {
+        assert_eq!(trim_blank_edges("\n\na\n\nb\n\n"), "a\n\nb");
+    }
+
+    #[test]
+    fn trim_blank_edges_all_blank_is_empty() {
+        assert_eq!(trim_blank_edges("\n\n\n"), "");
+        assert_eq!(trim_blank_edges("\x1b[0m\n  \n"), "");
     }
 }
