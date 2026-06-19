@@ -14,11 +14,17 @@
 
 use std::collections::HashMap;
 
+use base64::Engine as _;
 use cockpit_engine::ControlClient;
 use serde::Serialize;
 
 use crate::status::{classify, Status};
 use crate::tmux::{self, SESSION};
+
+/// Shared base64 engine for warm-start payload encoding (mirrors the engine's
+/// STANDARD alphabet so the frontend decodes identically to `pane:data`).
+const B64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::STANDARD;
 
 // ── Snapshot / return DTOs (camelCase for the JS frontend) ───────────────────
 
@@ -578,6 +584,32 @@ impl SessionManager {
             Ok(out.stdout)
         } else {
             Err(out.stderr)
+        }
+    }
+
+    /// Warm-start replay: capture the pane's current screen + full scrollback
+    /// WITH escape sequences (`-e`) so colors/cursor styling survive, then return
+    /// the raw bytes base64-encoded. The control client only streams `%output`
+    /// produced AFTER it attaches, so a pane the GUI re-attaches to (e.g. after a
+    /// window close+reopen) would otherwise paint blank — this replays whatever
+    /// is already on screen. `-S -` includes the whole scrollback history.
+    ///
+    /// Distinct from `capture_pane` (the poller's plain, bounded capture used for
+    /// status classification): warm-start is escape-aware and unbounded.
+    pub fn warm_start(&self, pane_id: &str) -> Result<String, String> {
+        let out = tmux::tmux(&[
+            "capture-pane",
+            "-p",
+            "-e",
+            "-S",
+            "-",
+            "-t",
+            pane_id,
+        ])?;
+        if out.ok() {
+            Ok(B64.encode(out.stdout.as_bytes()))
+        } else {
+            Err(out.stderr.trim().to_string())
         }
     }
 

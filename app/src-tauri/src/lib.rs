@@ -16,14 +16,27 @@ pub mod manager;
 pub mod status;
 pub mod tmux;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use base64::Engine as _;
 use cockpit_engine::{Outbound, TopologyEvent};
 use manager::{
     CloseTabResult, CockpitState, CreateTabResult, SessionManager, SplitPaneResult,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+/// Shared base64 engine for re-encoding coalesced `pane:data` payloads (must
+/// match the engine's STANDARD alphabet so the frontend decodes identically).
+const B64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::STANDARD;
+
+/// Output coalescing window. `spawn_forwarder` buffers per-pane `%output` and
+/// flushes at most one `pane:data` per pane per tick, instead of one emit per
+/// control-mode frame (which floods the IPC bridge and causes UI lag).
+const COALESCE_MS: u64 = 16;
 
 /// Managed state: the SessionManager behind a mutex (Tauri commands are sync).
 #[derive(Clone)]
@@ -48,6 +61,15 @@ impl Default for AppState {
 #[serde(rename_all = "camelCase")]
 struct PaneDataPayload {
     pane_id: String,
+    bytes_b64: String,
+}
+
+/// Return value of the `warm_start` command: the pane's current screen +
+/// scrollback (escape-aware), base64-encoded, for the frontend to `term.write`
+/// on mount so a re-attached pane isn't blank.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WarmStartPayload {
     bytes_b64: String,
 }
 
@@ -157,20 +179,56 @@ fn list_state(state: State<'_, AppState>) -> Result<CockpitState, String> {
     mgr.list_state()
 }
 
+/// Warm-start replay for one pane: return the pane's current screen + scrollback
+/// (escape-aware) base64-encoded. The frontend calls this once on mount so a
+/// re-attached pane paints its existing content instead of staying blank (the
+/// control client only streams `%output` produced after it attaches).
+#[tauri::command]
+fn warm_start(state: State<'_, AppState>, pane_id: String) -> Result<WarmStartPayload, String> {
+    let mgr = state.mgr.lock().unwrap();
+    let bytes_b64 = mgr.warm_start(&pane_id)?;
+    Ok(WarmStartPayload { bytes_b64 })
+}
+
 // ── Background tasks ─────────────────────────────────────────────────────────
 
-/// Forward engine `Outbound` -> Tauri events. Runs until the channel closes.
+/// Forward engine `Outbound` -> Tauri events, with output coalescing.
+///
+/// Per-pane `%output` is buffered (decoded bytes appended) and flushed at most
+/// once per `COALESCE_MS` as a SINGLE `pane:data` per pane. Under heavy output
+/// this collapses thousands of tiny IPC emits per second into ~60/pane/s,
+/// killing the UI lag (D3 spike named 16ms coalescing as the v1 mitigation).
+///
+/// Ordering is preserved: a `Topology`/`Exit` event flushes the pending pane
+/// buffers FIRST, so output that arrived before a topology change is delivered
+/// before it. Runs until the channel disconnects.
 fn spawn_forwarder(app: AppHandle, rx: std::sync::mpsc::Receiver<Outbound>) {
     std::thread::spawn(move || {
-        for out in rx {
-            match out {
-                Outbound::PaneData { pane_id, bytes_b64 } => {
-                    let _ = app.emit("pane:data", PaneDataPayload { pane_id, bytes_b64 });
+        // Pending per-pane bytes, accumulated between flushes. Insertion order is
+        // not load-bearing (each pane's xterm is independent); within a pane the
+        // appended Vec preserves byte order.
+        let mut pending: HashMap<String, Vec<u8>> = HashMap::new();
+
+        loop {
+            match rx.recv_timeout(Duration::from_millis(COALESCE_MS)) {
+                Ok(Outbound::PaneData { pane_id, bytes_b64 }) => {
+                    // Decode here and re-encode on flush; concatenating decoded
+                    // bytes is the only correct way to merge base64 chunks.
+                    match B64.decode(bytes_b64.as_bytes()) {
+                        Ok(bytes) => pending.entry(pane_id).or_default().extend_from_slice(&bytes),
+                        // Should not happen (engine produces it), but never drop
+                        // the frame on a decode error — emit it standalone.
+                        Err(_) => {
+                            let _ = app.emit("pane:data", PaneDataPayload { pane_id, bytes_b64 });
+                        }
+                    }
                 }
-                Outbound::Topology(t) => {
+                Ok(Outbound::Topology(t)) => {
+                    flush_pending(&app, &mut pending);
                     let _ = app.emit("pane:topology", topology_payload(t));
                 }
-                Outbound::Exit { reason } => {
+                Ok(Outbound::Exit { reason }) => {
+                    flush_pending(&app, &mut pending);
                     let _ = app.emit(
                         "pane:topology",
                         PaneTopologyPayload {
@@ -183,9 +241,37 @@ fn spawn_forwarder(app: AppHandle, rx: std::sync::mpsc::Receiver<Outbound>) {
                     );
                     break;
                 }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // Tick boundary: emit one coalesced `pane:data` per pane.
+                    flush_pending(&app, &mut pending);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    flush_pending(&app, &mut pending);
+                    break;
+                }
             }
         }
     });
+}
+
+/// Drain `pending`, emitting one coalesced `pane:data` per pane with buffered
+/// bytes. No-op for empty buffers. Clears the map.
+fn flush_pending(app: &AppHandle, pending: &mut HashMap<String, Vec<u8>>) {
+    if pending.is_empty() {
+        return;
+    }
+    for (pane_id, bytes) in pending.drain() {
+        if bytes.is_empty() {
+            continue;
+        }
+        let _ = app.emit(
+            "pane:data",
+            PaneDataPayload {
+                pane_id,
+                bytes_b64: B64.encode(&bytes),
+            },
+        );
+    }
 }
 
 fn topology_payload(t: TopologyEvent) -> PaneTopologyPayload {
@@ -261,6 +347,7 @@ pub fn run() {
             pane_resize,
             interrupt_pane,
             list_state,
+            warm_start,
         ])
         .on_window_event(|window, event| {
             // Best-effort: when the main window closes, tear down the control
