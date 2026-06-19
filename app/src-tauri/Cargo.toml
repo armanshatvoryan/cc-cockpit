@@ -1,0 +1,37 @@
+# CC Cockpit — v1 backbone (Tauri 2 app).
+#
+# A cargo workspace so the app is fully self-contained: the two PROVEN spike
+# crates (control-mode parser + control-client engine) live in-tree under
+# crates/ and are referenced by path. The Tauri shell + SessionManager is the
+# `cc-cockpit` package below.
+[workspace]
+resolver = "2"
+members = ["crates/control-mode", "crates/engine"]
+
+[package]
+name = "cc-cockpit"
+version = "0.1.0"
+edition = "2021"
+description = "CC Cockpit — desktop-over-tmux multitask cockpit (v1 backbone)."
+
+[lib]
+name = "cc_cockpit_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# Headless smoke binary: drives SessionManager end-to-end without the GUI.
+[[bin]]
+name = "smoke"
+path = "src/bin/smoke.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+# The PROVEN crates, brought in-tree (path deps to the workspace members).
+cockpit-control-mode = { path = "crates/control-mode" }
+cockpit-engine = { path = "crates/engine" }

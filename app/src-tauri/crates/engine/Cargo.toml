@@ -1,0 +1,17 @@
+[package]
+name = "cockpit-engine"
+version = "0.1.0"
+edition = "2021"
+description = "D3 spike: tmux -CC control-client engine (spawn, parse, route) — headless, GUI-independent."
+
+[lib]
+name = "cockpit_engine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "live-bridge"
+path = "src/bin/live_bridge.rs"
+
+[dependencies]
+cockpit-control-mode = { path = "../control-mode" }
+base64 = "0.22"

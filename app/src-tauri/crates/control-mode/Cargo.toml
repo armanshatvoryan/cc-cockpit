@@ -1,0 +1,13 @@
+[package]
+name = "cockpit-control-mode"
+version = "0.1.0"
+edition = "2021"
+description = "D3 spike: tmux control-mode (-CC) protocol parser for the CC Cockpit bridge."
+
+[lib]
+name = "cockpit_control_mode"
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
