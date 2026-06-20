@@ -124,27 +124,36 @@ fn has_working_timer(line: &str) -> bool {
     false
 }
 
-/// WORKING glyph: the ACTIVE spinner frame `✽` (U+273D). The settled `✻`
-/// (U+273B) is explicitly NOT a working signal.
-fn has_working_glyph(line: &str) -> bool {
-    line.contains('\u{273d}')
+/// The animated working spinner: a dingbat-star glyph followed by a present-
+/// participle verb ending in an ellipsis — "✽ Cooking…", "✻ Coalescing…",
+/// "✺ Evaporating…". The glyph FRAME animates (CC cycles ✶✷✸✹✺✻✼✽✾…) and the verb
+/// list is open-ended, so we match the invariant SHAPE — a leading star glyph plus
+/// a trailing "…" — NOT a specific frame or word. A SETTLED turn reads
+/// "✻ Cooked for 7s" (past tense, no ellipsis) and does NOT match; this is the
+/// reliable active-turn discriminator. (The old code keyed on the single `✽` frame
+/// + a hardcoded verb whitelist and missed most of CC's spinner states.)
+fn has_active_spinner(line: &str) -> bool {
+    let t = line.trim();
+    t.ends_with('…') && matches!(t.chars().next(), Some(c) if is_spinner_glyph(c))
 }
 
-/// WORKING corroborators present in this CC build while a tool runs.
+/// A dingbat star/asterisk/florette glyph (U+2720–U+2746) — the range CC cycles
+/// the spinner through. Only meaningful paired with the trailing-ellipsis shape.
+fn is_spinner_glyph(c: char) -> bool {
+    ('\u{2720}'..='\u{2746}').contains(&c)
+}
+
+/// Non-spinner WORKING corroborators — present ONLY during an active turn.
 fn has_working_other(line: &str) -> bool {
-    line.contains("to run in background")
-        || line.contains("esc to interrupt")
-        || line.contains("Running…")
-        || line.contains("Transmuting…")
-        || line.contains("Baking…")
-        || line.contains("Cooking…")
-        || line.contains("Simmering…")
-        || line.contains("Initializing…")
-        || line.contains("Resolving…")
+    line.contains("to run in background") || line.contains("esc to interrupt")
 }
 
+/// A line that means claude is actively mid-turn. Every component is active-only
+/// (a live `Ns · tokens` timer, the star+ellipsis spinner, or an interrupt hint) —
+/// each is REPLACED by the settled "✻ …ed for Ns" summary when the turn ends, so
+/// none linger in scrollback to cause a false positive.
 fn is_working_line(line: &str) -> bool {
-    has_working_timer(line) || has_working_glyph(line) || has_working_other(line)
+    has_working_timer(line) || has_active_spinner(line) || has_working_other(line)
 }
 
 /// NEEDS_INPUT question half.
@@ -205,7 +214,7 @@ fn last_line_matching(lines: &[&str], pred: impl Fn(&str) -> bool) -> usize {
 
 /// Classify a capture-pane snapshot. `last_activity_age` is seconds since
 /// `#{pane_activity}` advanced (None if unknown).
-pub fn classify(dead: bool, raw: &str, last_activity_age: Option<u64>) -> Status {
+pub fn classify(dead: bool, raw: &str, _last_activity_age: Option<u64>) -> Status {
     // Rule 1: dead short-circuits.
     if dead {
         return Status::Dead;
@@ -229,17 +238,14 @@ pub fn classify(dead: bool, raw: &str, last_activity_age: Option<u64>) -> Status
     // IDLE prompt/footer.
     let idle = last_line_matching(&tail, |l| is_idle_marker(l));
 
-    // ACTIVE working override. The ✽ spinner glyph (and an explicit "esc to
-    // interrupt") appear ONLY mid-turn — the spinner settles to ✻ when done. CC's
+    // ACTIVE working override. Every is_working_line signal is active-turn only
+    // (see its doc), so a working line present means claude is mid-turn. CC's
     // "⏵⏵ auto mode on" footer is PERMANENT and bottom-most, so the position-based
-    // "lowest marker wins" tiebreak below pins IDLE during work; the activity-age
-    // debounce can't rescue it because tmux 3.6b reports empty #{pane_activity}.
-    // So an active signal forces WORKING — unless a NEEDS_INPUT modal is up, which
-    // means claude has paused for the user and is not working.
-    let active_working = tail
-        .iter()
-        .any(|l| has_working_glyph(l) || l.contains("esc to interrupt"));
-    if n == 0 && active_working {
+    // "lowest marker wins" tiebreak below would pin IDLE during work; the old
+    // activity-age debounce can't rescue it because tmux 3.6b reports empty
+    // #{pane_activity} (verified live). So a working line forces WORKING — unless a
+    // NEEDS_INPUT modal is up, which means claude has paused for the user.
+    if n == 0 && w > 0 {
         return Status::Working;
     }
 
@@ -271,16 +277,6 @@ pub fn classify(dead: bool, raw: &str, last_activity_age: Option<u64>) -> Status
     }
     if (idle as i64) > best_line {
         best = Status::Idle;
-    }
-
-    // idle_secs debounce: landed on IDLE via prompt but activity advanced within
-    // IDLE_SECS AND a working marker exists -> hold WORKING (mid-repaint turn).
-    if best == Status::Idle {
-        if let Some(age) = last_activity_age {
-            if w > 0 && age < IDLE_SECS {
-                best = Status::Working;
-            }
-        }
     }
 
     best
@@ -344,6 +340,23 @@ mod tests {
     }
 
     #[test]
+    fn animated_spinner_frame_is_working() {
+        // The spinner glyph cycles through frames; a non-✽ frame (✻) mid-turn (verb
+        // + ellipsis) must still read WORKING — this is the exact live capture that
+        // the old single-glyph + verb-whitelist logic misclassified as IDLE.
+        let snap = "⏺ ...\n✻ Coalescing…\n────\n❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)\n";
+        assert_eq!(classify(false, snap, None), Status::Working);
+    }
+
+    #[test]
+    fn settled_summary_is_idle_not_working() {
+        // Past-tense settled summary ("✻ Cooked for 7s", no ellipsis) + prompt +
+        // footer -> IDLE. The spinner shape requires a trailing ellipsis.
+        let snap = "⏺ done.\n✻ Cooked for 7s\n────\n❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)\n";
+        assert_eq!(classify(false, snap, None), Status::Idle);
+    }
+
+    #[test]
     fn needs_input_beats_active_spinner_override() {
         // A NEEDS_INPUT modal means claude paused for the user — not working — even
         // if a stale spinner lingers above. NEEDS_INPUT must still win.
@@ -384,14 +397,14 @@ mod tests {
     }
 
     #[test]
-    fn idle_debounce_holds_working_when_fresh() {
-        // A TIMER-ONLY working marker (no ✽ spinner, no "esc to interrupt") doesn't
-        // trip the active-working override, so it exercises the position tiebreak +
-        // activity debounce: with the prompt lowest it would be IDLE, but fresh
-        // activity holds WORKING; stale activity settles to IDLE.
+    fn live_timer_is_working_regardless_of_age() {
+        // A live "Ns · tokens" timer only appears mid-turn, so it reads WORKING even
+        // sitting above the permanent "auto mode on" footer — and independent of the
+        // activity age (which is empty on tmux 3.6b anyway). Replaces the old
+        // activity-debounce path, now obsolete: working signals are active-only.
         let snap = "  ◯ agent  building  5s · 1k tokens\n❯ \n⏵⏵ auto mode on (shift+tab to cycle)\n";
-        assert_eq!(classify(false, snap, Some(1)), Status::Working);
-        assert_eq!(classify(false, snap, Some(10)), Status::Idle);
+        assert_eq!(classify(false, snap, Some(10)), Status::Working);
+        assert_eq!(classify(false, snap, None), Status::Working);
     }
 
     #[test]
