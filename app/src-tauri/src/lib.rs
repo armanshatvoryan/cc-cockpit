@@ -267,6 +267,14 @@ fn plugin_toggle_preview(id: String, enable: bool) -> Result<String, String> {
     inventory::plugin_toggle_preview(&id, enable)
 }
 
+/// Cross-project audit matrix (P2-F5): for each open tab's project root, the
+/// effective on/off of every plugin + MCP server. Pure read (reuses the
+/// inventory readers per project). `project_paths` = the open tabs' cwds.
+#[tauri::command]
+fn load_audit_matrix(project_paths: Vec<String>) -> Result<inventory::AuditMatrix, String> {
+    inventory::load_audit_matrix(project_paths)
+}
+
 // ── Background tasks ─────────────────────────────────────────────────────────
 
 /// Forward engine `Outbound` -> Tauri events, with output coalescing.
@@ -429,6 +437,7 @@ pub fn run() {
             load_inventory,
             toggle_plugin,
             plugin_toggle_preview,
+            load_audit_matrix,
         ])
         .on_window_event(|window, event| {
             // ⌘W (and the red close button) fire CloseRequested, which would close

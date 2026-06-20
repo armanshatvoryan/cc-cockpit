@@ -65,6 +65,26 @@ export interface InventoryItem {
   parseError?: string;
 }
 
+export type AuditCellState = "on" | "off" | "absent" | "error";
+
+export interface AuditColumn {
+  label: string;
+  projectPath: string;
+}
+
+export interface AuditRow {
+  id: string;
+  name: string;
+  type: "plugin" | "mcp";
+  detail?: string;
+  cells: AuditCellState[];
+}
+
+export interface AuditMatrix {
+  columns: AuditColumn[];
+  rows: AuditRow[];
+}
+
 export interface CreateTabResult {
   tabId: string;
   tmuxWindowId: string;
@@ -224,6 +244,15 @@ export function togglePlugin(id: string, enable: boolean): Promise<void> {
 /** The exact `claude …` command a confirm modal shows before a toggle runs. */
 export function pluginTogglePreview(id: string, enable: boolean): Promise<string> {
   return invoke<string>("plugin_toggle_preview", { id, enable });
+}
+
+/**
+ * Cross-project audit matrix (P2-F5): effective on/off of every plugin + MCP
+ * server across the open tabs' project roots. `projectPaths` = the open tabs'
+ * cwds (the backend resolves + dedupes them to project roots). Pure read.
+ */
+export function loadAuditMatrix(projectPaths: string[]): Promise<AuditMatrix> {
+  return invoke<AuditMatrix>("load_audit_matrix", { projectPaths });
 }
 
 /**

@@ -20,6 +20,7 @@ import {
   listState,
   setGrid,
   loadInventory,
+  loadAuditMatrix,
   togglePlugin,
   pluginTogglePreview,
   onPaneStatus,
@@ -31,6 +32,7 @@ import {
   type TabInfo,
   type InventoryItem,
   type InventoryType,
+  type AuditMatrix,
 } from "./ipc";
 
 interface CockpitStore extends CockpitState {
@@ -365,13 +367,30 @@ const [inventoryOpen, setInventoryOpen] = createSignal(false);
 const [invTypes, setInvTypes] = createSignal<Set<InventoryType>>(new Set());
 const [invScope, setInvScope] = createSignal<"all" | "global" | "project">("all");
 const [invQuery, setInvQuery] = createSignal("");
+// Which inventory view: the browse list (F1) or the cross-project matrix (F5).
+const [invView, setInvView] = createSignal<"browse" | "audit">("browse");
 
-export { inventory, inventoryOpen, invTypes, invScope, invQuery };
+// Audit matrix (P2-F5) state.
+interface AuditStore {
+  data: AuditMatrix | null;
+  loading: boolean;
+  error: string | null;
+}
+const [audit, setAudit] = createStore<AuditStore>({ data: null, loading: false, error: null });
+
+export { inventory, inventoryOpen, invTypes, invScope, invQuery, invView, audit };
 
 /** Project root for project-scope inventory = the active tab's first pane cwd. */
 function activeProjectPath(): string | undefined {
   const cwd = activePanes()[0]?.cwd;
   return cwd && cwd.trim() ? cwd : undefined;
+}
+
+/** Each open tab's first-pane cwd (the backend resolves + dedupes to roots). */
+function openTabProjectPaths(): string[] {
+  return store.tabs
+    .map((t) => store.panes.find((p) => p.paneId === t.paneIds[0])?.cwd)
+    .filter((c): c is string => !!c && c.trim().length > 0);
 }
 
 /** Reload the inventory from the backend for the current project context. */
@@ -389,9 +408,37 @@ export async function loadInventoryNow(): Promise<void> {
   }
 }
 
+/** Reload the cross-project audit matrix for the current open tabs. */
+export async function loadAuditNow(): Promise<void> {
+  setAudit("loading", true);
+  setAudit("error", null);
+  try {
+    const data = await loadAuditMatrix(openTabProjectPaths());
+    setAudit("data", data);
+  } catch (e) {
+    setAudit("error", String(e));
+    setAudit("data", null);
+  } finally {
+    setAudit("loading", false);
+  }
+}
+
+/** Reload whichever inventory view is active. */
+export function reloadInventoryView(): void {
+  if (invView() === "audit") void loadAuditNow();
+  else void loadInventoryNow();
+}
+
+/** Switch between the browse list and the audit matrix (loads on switch). */
+export function setInventoryView(mode: "browse" | "audit"): void {
+  if (invView() === mode) return;
+  setInvView(mode);
+  reloadInventoryView();
+}
+
 export function openInventory(): void {
   setInventoryOpen(true);
-  void loadInventoryNow();
+  reloadInventoryView();
 }
 export function closeInventory(): void {
   setInventoryOpen(false);
@@ -492,7 +539,7 @@ export async function confirmToggle(): Promise<void> {
   setTogglingId(pending.item.id);
   try {
     await togglePlugin(pending.item.id, pending.enable);
-    await loadInventoryNow(); // read-back: the row reflects disk truth, not a guess
+    reloadInventoryView(); // read-back: the row reflects disk truth, not a guess
   } catch (e) {
     setStore("error", `plugin toggle failed: ${String(e)}`);
   } finally {

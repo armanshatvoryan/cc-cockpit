@@ -19,6 +19,7 @@
 //!   entirely against `$TMPDIR` fixtures — a test that touches live `~/.claude`
 //!   is a failing test by definition.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -499,6 +500,199 @@ pub fn plugin_toggle_preview(id: &str, enable: bool) -> Result<String, String> {
     Ok(format!("claude {}", argv.join(" ")))
 }
 
+// ── Audit matrix (P2-F5) — cross-project, read-only ────────────────────────────
+//
+// One grid showing the EFFECTIVE on/off of every plugin + MCP server across the
+// open tabs' projects. Native CC can't show this — `claude plugin`/`claude mcp`
+// list one project (the cwd) at a time. Columns = distinct project roots of the
+// open tabs; rows = the union of plugins + MCP servers; cells = on/off/absent/
+// error. Effective state per project = the project override if present, else the
+// global value. Pure read (reuses `load_inventory_at` per project) → unit tested.
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditColumn {
+    /// Project dir basename, for the column header.
+    pub label: String,
+    /// Absolute project root (tooltip + key).
+    pub project_path: String,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditRow {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// One state per column (aligned): `"on" | "off" | "absent" | "error"`.
+    pub cells: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditMatrix {
+    pub columns: Vec<AuditColumn>,
+    pub rows: Vec<AuditRow>,
+}
+
+/// Public entry: resolve `$HOME`, dedupe the tabs' project roots (preserving
+/// order), and compute the matrix. Empty `project_paths` → an empty matrix.
+pub fn load_audit_matrix(project_paths: Vec<String>) -> Result<AuditMatrix, String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME not set".to_string())?;
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for p in &project_paths {
+        let root = resolve_project_root(Path::new(p));
+        if seen.insert(root.to_string_lossy().to_string()) {
+            roots.push(root);
+        }
+    }
+    Ok(compute_audit(&home, &roots))
+}
+
+/// State letter for one inventory item.
+fn cell_of(item: &InventoryItem) -> &'static str {
+    if item.parse_error.is_some() {
+        "error"
+    } else if item.enabled {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+/// Per-column lookup tables (global vs project, per type) + parse-broken flags.
+struct ColIndex {
+    plugin_global: HashMap<String, &'static str>,
+    plugin_project: HashMap<String, &'static str>,
+    mcp_global: HashMap<String, &'static str>,
+    mcp_project: HashMap<String, &'static str>,
+    plugin_broken: bool,
+    mcp_broken: bool,
+}
+
+/// Build the matrix from each project root's inventory. Testable core.
+pub fn compute_audit(home: &Path, roots: &[PathBuf]) -> AuditMatrix {
+    let columns: Vec<AuditColumn> = roots
+        .iter()
+        .map(|r| AuditColumn {
+            label: r
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| r.to_string_lossy().to_string()),
+            project_path: r.to_string_lossy().to_string(),
+        })
+        .collect();
+
+    // Row universe (sorted, deduped) discovered while indexing the columns.
+    let mut plugin_rows: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    let mut mcp_rows: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut cols: Vec<ColIndex> = Vec::with_capacity(roots.len());
+
+    for root in roots {
+        let inv = load_inventory_at(home, Some(root.as_path()));
+        let mut c = ColIndex {
+            plugin_global: HashMap::new(),
+            plugin_project: HashMap::new(),
+            mcp_global: HashMap::new(),
+            mcp_project: HashMap::new(),
+            plugin_broken: false,
+            mcp_broken: false,
+        };
+        for it in &inv {
+            match it.kind.as_str() {
+                "plugin" => {
+                    let Ok((_scope, key)) = parse_plugin_id(&it.id) else { continue };
+                    if !key.contains('@') {
+                        // Synthetic settings.json parse-error row — not a real plugin.
+                        if it.parse_error.is_some() {
+                            c.plugin_broken = true;
+                        }
+                        continue;
+                    }
+                    let (name, mkt) = key
+                        .split_once('@')
+                        .map(|(n, m)| (n.to_string(), Some(m.to_string())))
+                        .unwrap_or((key.clone(), None));
+                    plugin_rows.entry(key.clone()).or_insert((name, mkt));
+                    let st = cell_of(it);
+                    if it.scope == "project" {
+                        c.plugin_project.insert(key, st);
+                    } else {
+                        c.plugin_global.insert(key, st);
+                    }
+                }
+                "mcp" => {
+                    if it.name.ends_with(".json") {
+                        if it.parse_error.is_some() {
+                            c.mcp_broken = true;
+                        }
+                        continue;
+                    }
+                    mcp_rows.entry(it.name.clone()).or_insert_with(|| it.detail.clone());
+                    let st = cell_of(it);
+                    if it.scope == "project" {
+                        c.mcp_project.insert(it.name.clone(), st);
+                    } else {
+                        c.mcp_global.insert(it.name.clone(), st);
+                    }
+                }
+                _ => {}
+            }
+        }
+        cols.push(c);
+    }
+
+    let mut rows: Vec<AuditRow> = Vec::new();
+    for (key, (name, mkt)) in &plugin_rows {
+        let cells = cols
+            .iter()
+            .map(|c| {
+                c.plugin_project
+                    .get(key)
+                    .or_else(|| c.plugin_global.get(key))
+                    .copied()
+                    .unwrap_or(if c.plugin_broken { "error" } else { "absent" })
+                    .to_string()
+            })
+            .collect();
+        rows.push(AuditRow {
+            id: format!("plugin:{key}"),
+            name: name.clone(),
+            kind: "plugin".into(),
+            detail: mkt.clone(),
+            cells,
+        });
+    }
+    for (name, detail) in &mcp_rows {
+        let cells = cols
+            .iter()
+            .map(|c| {
+                c.mcp_project
+                    .get(name)
+                    .or_else(|| c.mcp_global.get(name))
+                    .copied()
+                    .unwrap_or(if c.mcp_broken { "error" } else { "absent" })
+                    .to_string()
+            })
+            .collect();
+        rows.push(AuditRow {
+            id: format!("mcp:{name}"),
+            name: name.clone(),
+            kind: "mcp".into(),
+            detail: detail.clone(),
+            cells,
+        });
+    }
+
+    AuditMatrix { columns, rows }
+}
+
 // ── Minimal YAML frontmatter parser (no dep) ────────────────────────────────────
 
 /// Parse the leading `---\n … \n---` block into `(key, value)` pairs. Handles
@@ -776,6 +970,76 @@ mod tests {
     fn plugin_toggle_preview_is_human_readable() {
         let p = plugin_toggle_preview("plugin:global:caveman@caveman", false).unwrap();
         assert_eq!(p, "claude plugin disable caveman@caveman --scope user");
+    }
+
+    // ── P2-F5 audit matrix ──────────────────────────────────────────────────
+
+    #[test]
+    fn audit_matrix_effective_state_across_projects() {
+        let sb = Sandbox::new("audit");
+        let proj_a = sb.root.join("projA");
+        let proj_b = sb.root.join("projB");
+        let b_key = proj_b.to_string_lossy().to_string();
+        // Global: caveman ON.
+        sb.write(
+            "home/.claude/settings.json",
+            r#"{"enabledPlugins":{"caveman@caveman":true}}"#,
+        );
+        // projA overrides caveman OFF (project scope); projB has an MCP server.
+        sb.write(
+            "projA/.claude/settings.json",
+            r#"{"enabledPlugins":{"caveman@caveman":false}}"#,
+        );
+        sb.write(
+            "home/.claude.json",
+            &format!(
+                r#"{{ "projects": {{ "{b_key}": {{ "mcpServers": {{ "db": {{ "command": "db" }} }} }} }} }}"#
+            ),
+        );
+
+        let m = compute_audit(&sb.home(), &[proj_a.clone(), proj_b.clone()]);
+        assert_eq!(m.columns.len(), 2);
+        assert_eq!(m.columns[0].label, "projA");
+        assert_eq!(m.columns[1].label, "projB");
+
+        let plugin = m.rows.iter().find(|r| r.name == "caveman").expect("plugin row");
+        // projA = project override OFF; projB = global ON.
+        assert_eq!(plugin.cells, vec!["off", "on"]);
+
+        let mcp = m.rows.iter().find(|r| r.name == "db").expect("mcp row");
+        // db only exists in projB.
+        assert_eq!(mcp.cells, vec!["absent", "on"]);
+    }
+
+    /// Read-only audit over two REAL project roots. `#[ignore]`; run on demand.
+    #[test]
+    #[ignore]
+    fn real_audit_sanity() {
+        let m = load_audit_matrix(vec![
+            "/Users/armanshatvoran/Workflows".into(),
+            "/Users/armanshatvoran/Workflows/cc-cockpit".into(),
+        ])
+        .unwrap();
+        eprintln!(
+            "audit: {} columns ({:?}), {} rows",
+            m.columns.len(),
+            m.columns.iter().map(|c| &c.label).collect::<Vec<_>>(),
+            m.rows.len(),
+        );
+        for r in m.rows.iter().take(4) {
+            eprintln!("  {} {} -> {:?}", r.kind, r.name, r.cells);
+        }
+        assert!(!m.columns.is_empty());
+        assert!(m.rows.iter().all(|r| r.cells.len() == m.columns.len()));
+    }
+
+    #[test]
+    fn audit_matrix_empty_when_no_projects() {
+        let sb = Sandbox::new("audit-empty");
+        sb.write("home/.claude/settings.json", r#"{"enabledPlugins":{}}"#);
+        let m = compute_audit(&sb.home(), &[]);
+        assert!(m.columns.is_empty());
+        assert!(m.rows.is_empty());
     }
 
     #[test]

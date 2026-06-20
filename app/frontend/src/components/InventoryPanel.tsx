@@ -8,15 +8,18 @@
 // toggles (P2-F2) land next, delegated to `claude plugin/mcp` subcommands.
 
 import { For, Show, type Component } from "solid-js";
-import type { InventoryItem, InventoryType } from "../ipc";
+import type { AuditCellState, InventoryItem, InventoryType } from "../ipc";
 import {
   inventory,
   inventoryOpen,
   invTypes,
   invScope,
   invQuery,
+  invView,
+  audit,
   closeInventory,
-  loadInventoryNow,
+  reloadInventoryView,
+  setInventoryView,
   toggleInvType,
   setInvScopeFilter,
   setInvQueryFilter,
@@ -151,6 +154,79 @@ const InventoryRow: Component<{ item: InventoryItem }> = (props) => {
   );
 };
 
+const CELL_META: Record<AuditCellState, { glyph: string; cls: string; title: string }> = {
+  on: { glyph: "●", cls: "mx-on", title: "enabled" },
+  off: { glyph: "○", cls: "mx-off", title: "disabled" },
+  absent: { glyph: "·", cls: "mx-absent", title: "not present" },
+  error: { glyph: "!", cls: "mx-error", title: "parse error" },
+};
+
+/** Cross-project audit matrix (P2-F5): rows = plugins/MCP, cols = open projects. */
+const AuditMatrixView: Component = () => {
+  return (
+    <Show
+      when={!audit.loading}
+      fallback={<div class="inv-empty">loading matrix…</div>}
+    >
+      <Show
+        when={audit.error}
+        fallback={
+          <Show
+            when={audit.data && audit.data.columns.length > 0}
+            fallback={<div class="inv-empty">no open project tabs to audit</div>}
+          >
+            <div class="inv-matrix-wrap">
+              <table class="inv-matrix">
+                <thead>
+                  <tr>
+                    <th class="mx-corner">item</th>
+                    <For each={audit.data!.columns}>
+                      {(c) => (
+                        <th class="mx-col" title={c.projectPath}>
+                          {c.label}
+                        </th>
+                      )}
+                    </For>
+                  </tr>
+                </thead>
+                <tbody>
+                  <For each={audit.data!.rows}>
+                    {(row) => (
+                      <tr>
+                        <td class="mx-rowhead" title={row.detail ?? row.name}>
+                          <span
+                            class="mx-rowtype"
+                            style={{ color: TYPE_META[row.type].color }}
+                          >
+                            {TYPE_META[row.type].glyph}
+                          </span>
+                          <span class="mx-rowname">{row.name}</span>
+                        </td>
+                        <For each={row.cells}>
+                          {(state) => (
+                            <td
+                              class={`mx-cell ${CELL_META[state].cls}`}
+                              title={CELL_META[state].title}
+                            >
+                              {CELL_META[state].glyph}
+                            </td>
+                          )}
+                        </For>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              </table>
+            </div>
+          </Show>
+        }
+      >
+        <div class="inv-empty inv-error">{audit.error}</div>
+      </Show>
+    </Show>
+  );
+};
+
 export const InventoryPanel: Component = () => {
   const counts = inventoryCounts;
   const shown = filteredInventory;
@@ -159,18 +235,36 @@ export const InventoryPanel: Component = () => {
       <aside class="inv-panel" role="dialog" aria-label="Inventory">
         <header class="inv-header">
           <span class="inv-title">INVENTORY</span>
-          <span class="inv-count">
-            {shown().length}
-            <Show when={shown().length !== inventory.items.length}>
-              <span class="inv-count-total"> / {inventory.items.length}</span>
-            </Show>
-          </span>
+          <div class="inv-view-seg">
+            <button
+              class="inv-seg-btn"
+              classList={{ active: invView() === "browse" }}
+              onClick={() => setInventoryView("browse")}
+            >
+              Browse
+            </button>
+            <button
+              class="inv-seg-btn"
+              classList={{ active: invView() === "audit" }}
+              onClick={() => setInventoryView("audit")}
+            >
+              Audit
+            </button>
+          </div>
+          <Show when={invView() === "browse"}>
+            <span class="inv-count">
+              {shown().length}
+              <Show when={shown().length !== inventory.items.length}>
+                <span class="inv-count-total"> / {inventory.items.length}</span>
+              </Show>
+            </span>
+          </Show>
           <span class="inv-spacer" />
           <button
             class="inv-icon-btn"
             title="Reload"
-            onClick={() => void loadInventoryNow()}
-            aria-label="Reload inventory"
+            onClick={() => reloadInventoryView()}
+            aria-label="Reload"
           >
             ⟳
           </button>
@@ -184,6 +278,7 @@ export const InventoryPanel: Component = () => {
           </button>
         </header>
 
+        <Show when={invView() === "browse"}>
         <div class="inv-filters">
           <div class="inv-type-chips">
             <For each={TYPES}>
@@ -224,30 +319,41 @@ export const InventoryPanel: Component = () => {
             onInput={(e) => setInvQueryFilter(e.currentTarget.value)}
           />
         </div>
+        </Show>
 
         <div class="inv-body">
           <Show
-            when={!inventory.loading}
-            fallback={<div class="inv-empty">loading…</div>}
+            when={invView() === "browse"}
+            fallback={<AuditMatrixView />}
           >
             <Show
-              when={inventory.error}
-              fallback={
-                <Show
-                  when={shown().length > 0}
-                  fallback={<div class="inv-empty">no items match</div>}
-                >
-                  <For each={shown()}>{(item) => <InventoryRow item={item} />}</For>
-                </Show>
-              }
+              when={!inventory.loading}
+              fallback={<div class="inv-empty">loading…</div>}
             >
-              <div class="inv-empty inv-error">{inventory.error}</div>
+              <Show
+                when={inventory.error}
+                fallback={
+                  <Show
+                    when={shown().length > 0}
+                    fallback={<div class="inv-empty">no items match</div>}
+                  >
+                    <For each={shown()}>{(item) => <InventoryRow item={item} />}</For>
+                  </Show>
+                }
+              >
+                <div class="inv-empty inv-error">{inventory.error}</div>
+              </Show>
             </Show>
           </Show>
         </div>
 
         <footer class="inv-footer">
-          plugins toggle via native claude · ⌘I to close
+          <Show
+            when={invView() === "browse"}
+            fallback={<>● on · ○ off · · absent · ! error — effective per project</>}
+          >
+            plugins toggle via native claude · ⌘I to close
+          </Show>
         </footer>
       </aside>
       <ConfirmToggle />
