@@ -163,6 +163,15 @@ export function paneResize(paneId: string, cols: number, rows: number): Promise<
   return invoke<void>("pane_resize", { paneId, cols, rows });
 }
 
+/**
+ * Size the WHOLE tmux window to the grid's bounding box and re-tile. This is the
+ * single authority for window size (the control client's size IS the window
+ * size), replacing per-pane resizes that collapsed multi-pane tabs to 1 column.
+ */
+export function setGrid(cols: number, rows: number, layout: string): Promise<void> {
+  return invoke<void>("set_grid", { cols, rows, layout });
+}
+
 /** Ctrl+C interrupt for a pane. */
 export function interruptPane(paneId: string): Promise<void> {
   return invoke<void>("interrupt_pane", { paneId });

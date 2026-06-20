@@ -205,6 +205,15 @@ fn pane_resize(state: State<'_, AppState>, pane_id: String, cols: u16, rows: u16
     mgr.pane_resize(&pane_id, cols, rows)
 }
 
+/// Size the whole window to the grid bounding box + re-tile. The frontend grid
+/// coordinator is the SINGLE authority for window size (one call per layout
+/// change), replacing the per-pane client resize that collapsed multi-pane tabs.
+#[tauri::command]
+fn set_grid(state: State<'_, AppState>, cols: u16, rows: u16, layout: String) -> Result<(), String> {
+    let mut mgr = state.mgr.lock().unwrap();
+    mgr.set_grid(cols, rows, &layout)
+}
+
 #[tauri::command]
 fn interrupt_pane(state: State<'_, AppState>, pane_id: String) -> Result<(), String> {
     let mut mgr = state.mgr.lock().unwrap();
@@ -384,6 +393,7 @@ pub fn run() {
             launch_shell,
             pane_send_keys,
             pane_resize,
+            set_grid,
             interrupt_pane,
             list_state,
             warm_start,

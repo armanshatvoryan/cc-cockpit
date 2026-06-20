@@ -141,6 +141,25 @@ impl ControlClient {
         self.write_cmd(&cmd)
     }
 
+    /// Size the WHOLE window (the control client's viewport IS the window size) to
+    /// the grid's bounding box, then re-tile. This is the correct multi-pane path:
+    /// the per-pane `refresh-client` in `pane_resize` makes every xterm fight over
+    /// the single client size, so the last writer shrinks the window to ONE pane's
+    /// width and the others collapse to 1 col ("no space for new pane" on split).
+    /// Here ONE authority (the frontend grid coordinator) sets the window to the
+    /// sum of the tiles and `select-layout` distributes panes evenly so each tmux
+    /// pane matches its xterm cell. `layout` is a tmux layout name (e.g. `tiled`).
+    pub fn set_grid(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        layout: &str,
+    ) -> Result<(), EngineError> {
+        // refresh-client first (grow the window), THEN select-layout (tile within).
+        let cmd = format!("refresh-client -C {cols},{rows}\nselect-layout {layout}\n");
+        self.write_cmd(&cmd)
+    }
+
     /// Ctrl+C interrupt (P1-F5): send 0x03 to the pane.
     pub fn interrupt_pane(&mut self, pane_id: &str) -> Result<(), EngineError> {
         self.pane_send_keys_hex(pane_id, &[0x03])

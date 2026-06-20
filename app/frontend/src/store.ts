@@ -18,6 +18,7 @@ import {
   splitPane,
   closePane,
   listState,
+  setGrid,
   onPaneStatus,
   onPaneTopology,
   onCockpitReconnected,
@@ -179,6 +180,57 @@ export function shutdownCockpit(): void {
 }
 
 // ── Actions ────────────────────────────────────────────────────────────────────
+
+// ── Grid sizing coordinator ─────────────────────────────────────────────────
+//
+// THE single authority for tmux window size. Each xterm reports its fitted cell
+// size (cols×rows) here; we compute the window bounding box = grid columns/rows ×
+// cell + inter-pane borders, and push ONE `set_grid` (refresh-client + tiled
+// select-layout). This replaces the old per-pane resize where every xterm set the
+// whole client size to its own width — the last writer shrank the window to one
+// pane and the rest collapsed to 1 column ("no space for new pane" on split).
+
+let cellCols = 80;
+let cellRows = 24;
+let gridTimer: number | undefined;
+let lastGridKey = "";
+
+/** Column count for n panes — MUST mirror PaneGrid.columnsFor. */
+function gridColumns(n: number): number {
+  if (n <= 1) return 1;
+  if (n <= 4) return 2;
+  return 3;
+}
+
+/** An xterm reports its fitted cell size; recompute + push the window grid. */
+export function reportCell(cols: number, rows: number): void {
+  if (cols > 0) cellCols = cols;
+  if (rows > 0) cellRows = rows;
+  if (gridTimer) clearTimeout(gridTimer);
+  gridTimer = window.setTimeout(() => void pushGrid(), 90);
+}
+
+async function pushGrid(): Promise<void> {
+  const n = store.panes.length;
+  if (n === 0) return;
+  const cols = gridColumns(n);
+  const rows = Math.ceil(n / cols);
+  // Bounding box: tiles plus one border column/row between adjacent panes.
+  const winCols = cols * cellCols + (cols - 1);
+  const winRows = rows * cellRows + (rows - 1);
+  // Layout must MATCH the CSS grid. A single row of panes (n <= cols) is a
+  // horizontal split — `tiled` would stack them vertically (mismatch → wrapping),
+  // so use `even-horizontal`. Multi-row falls back to `tiled` (≈ the 2-col CSS).
+  const layout = rows <= 1 ? "even-horizontal" : "tiled";
+  const key = `${winCols}x${winRows}/${n}/${layout}`;
+  if (key === lastGridKey) return; // change-guard: no redundant select-layout
+  lastGridKey = key;
+  try {
+    await setGrid(winCols, winRows, layout);
+  } catch {
+    /* transient; next report retries */
+  }
+}
 
 export function focusPane(paneId: string): void {
   setFocusedPaneId(paneId);

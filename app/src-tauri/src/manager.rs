@@ -409,6 +409,23 @@ impl SessionManager {
             .map_err(|e| e.to_string())
     }
 
+    /// Size the whole window to the grid bounding box + re-tile (multi-pane safe).
+    /// `layout` is validated to a known tmux layout name so a bad value can't be
+    /// injected into the control stream.
+    pub fn set_grid(&mut self, cols: u16, rows: u16, layout: &str) -> Result<(), String> {
+        let layout = match layout {
+            "tiled" | "even-horizontal" | "even-vertical" | "main-horizontal"
+            | "main-vertical" => layout,
+            _ => "tiled",
+        };
+        // Clamp to sane bounds; tmux rejects absurd sizes and a 0 would be invalid.
+        let cols = cols.clamp(20, 2000);
+        let rows = rows.clamp(5, 500);
+        self.client_mut()?
+            .set_grid(cols, rows, layout)
+            .map_err(|e| e.to_string())
+    }
+
     pub fn interrupt_pane(&mut self, pane_id: &str) -> Result<(), String> {
         self.client_mut()?
             .interrupt_pane(pane_id)

@@ -18,11 +18,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
   onPaneData,
-  paneResize,
   paneSendKeys,
   warmStart,
   type PaneDataPayload,
 } from "./ipc";
+import { reportCell } from "./store";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export interface XtermHostProps {
@@ -69,9 +69,11 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     // the macOS WKWebView. The default DOM renderer is plenty for v1 (output is
     // already coalesced to ~1 write/pane/16ms in the backend forwarder).
 
-    // Initial fit + push size to tmux so the pane lays out for our viewport.
+    // Initial fit + report our cell size to the grid coordinator (the single
+    // window-size authority). Per-pane resize is gone — it collapsed multi-pane
+    // tabs to 1 column.
     fit.fit();
-    void paneResize(paneId, term.cols, term.rows).catch(() => {});
+    reportCell(term.cols, term.rows);
 
     // Output: write decoded bytes verbatim (xterm is a full VT emulator).
     let unlistenData: UnlistenFn | undefined;
@@ -117,7 +119,7 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
         if (term.cols !== lastCols || term.rows !== lastRows) {
           lastCols = term.cols;
           lastRows = term.rows;
-          void paneResize(paneId, term.cols, term.rows).catch(() => {});
+          reportCell(term.cols, term.rows);
         }
       }, 50);
     });
