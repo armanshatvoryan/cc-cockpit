@@ -172,6 +172,17 @@ export interface TeamRun {
   parseError?: string;
 }
 
+// ── Spin-up (P3 step 2) ──────────────────────────────────────────────────────
+
+export interface SpinupPreview {
+  rosterName: string;
+  workflowName: string;
+  /** The single-line lead prompt the cockpit will send after launch. */
+  prompt: string;
+  /** Workflow roles the roster doesn't cover. Non-empty ⇒ launch blocked. */
+  coverageProblems: string[];
+}
+
 export interface CreateTabResult {
   tabId: string;
   tmuxWindowId: string;
@@ -370,6 +381,25 @@ export function loadCockpitTemplates(projectPath?: string): Promise<CockpitTempl
  */
 export function loadTeamRuns(): Promise<TeamRun[]> {
   return invoke<TeamRun[]>("load_team_runs");
+}
+
+/**
+ * Spin-up review (P3 step 2): pair a saved roster + workflow + task → the
+ * generated lead prompt + role-coverage problems. Pure compose — the launch
+ * itself is orchestrated in the store from existing plumbing.
+ */
+export function spinupPreview(
+  rosterId: string,
+  workflowId: string,
+  task: string,
+  projectPath?: string,
+): Promise<SpinupPreview> {
+  return invoke<SpinupPreview>("spinup_preview", {
+    rosterId,
+    workflowId,
+    task,
+    projectPath: projectPath ?? null,
+  });
 }
 
 /**

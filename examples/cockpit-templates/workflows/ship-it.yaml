@@ -5,10 +5,10 @@
 name: ship-it
 description: Scope -> build -> qa -> integrate, with user gates between stages.
 lead_hint: >
-  You are the team lead. Drive the team through the phases below over the native
-  file mailbox: route work to each role, unblock dependents, and STOP at every
-  `gate: user` to ask me before continuing. Keep each teammate focused on its
-  phase; summarize results back to me at each gate.
+  Drive the team through the phases below over the native file mailbox: route
+  work to each role, unblock dependents, and STOP at every user gate to ask me
+  before continuing. Keep each teammate focused on its phase; summarize results
+  back to me at each gate.
 phases:
   - id: scope
     role: product-owner

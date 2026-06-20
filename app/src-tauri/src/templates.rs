@@ -407,6 +407,159 @@ fn build_workflow(node: &Yaml, scope: &str, w: &mut Workflow) {
     }
 }
 
+// ── Spin-up (P3 step 2): pair a roster + workflow + task → a lead prompt ──────
+
+/// What the spin-up review dialog shows before launching: the generated lead
+/// prompt + any role-coverage problems (block launch when non-empty).
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpinupPreview {
+    pub roster_name: String,
+    pub workflow_name: String,
+    pub prompt: String,
+    /// Roster does not cover these workflow roles. Non-empty ⇒ launch blocked.
+    pub coverage_problems: Vec<String>,
+}
+
+/// Distinct roles a workflow names across its phases, excluding the implicit
+/// `lead` (the lead is the orchestrator, not a roster role).
+pub fn workflow_roles(w: &Workflow) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for ph in &w.phases {
+        for role in &ph.roles {
+            if role == "lead" {
+                continue;
+            }
+            if !seen.iter().any(|s| s == role) {
+                seen.push(role.clone());
+            }
+        }
+    }
+    seen
+}
+
+/// Every workflow role must map to a roster role. Returns a problem per missing
+/// role (empty ⇒ the pairing is launchable).
+pub fn validate_roster_covers_workflow(r: &Roster, w: &Workflow) -> Vec<String> {
+    let have: HashSet<&str> = r.roles.iter().map(|x| x.role.as_str()).collect();
+    workflow_roles(w)
+        .into_iter()
+        .filter(|role| !have.contains(role.as_str()))
+        .map(|role| format!("workflow role `{role}` is not in roster `{}`", r.name))
+        .collect()
+}
+
+/// Compose the single-line natural-language spin-up prompt the cockpit sends to
+/// a freshly-launched `claude` lead. SINGLE LINE on purpose: `pane_send_keys`
+/// delivers raw bytes, so an embedded newline would submit the input early —
+/// every newline in `lead_hint`/`task` is flattened to a space.
+pub fn generate_spinup_prompt(r: &Roster, w: &Workflow, task: &str) -> String {
+    let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut s = String::new();
+    s.push_str(&format!("You are the team lead for the \"{}\" team. ", r.name));
+
+    if let Some(h) = &w.lead_hint {
+        let h = flat(h);
+        if !h.is_empty() {
+            s.push_str(&h);
+            if !h.ends_with(['.', '!', '?']) {
+                s.push('.');
+            }
+            s.push(' ');
+        }
+    }
+
+    s.push_str("Team roster: ");
+    let roles: Vec<String> = r
+        .roles
+        .iter()
+        .map(|role| {
+            let mut p = format!("{} = {}", role.role, role.agent);
+            if let Some(m) = &role.model {
+                p.push_str(&format!(" (model {m})"));
+            }
+            if role.worktree {
+                p.push_str(" [own git worktree]");
+            }
+            if role.mode == "headless" {
+                p.push_str(" [headless]");
+            }
+            p
+        })
+        .collect();
+    s.push_str(&roles.join("; "));
+    s.push_str(". ");
+
+    s.push_str("Workflow phases: ");
+    let phases: Vec<String> = w
+        .phases
+        .iter()
+        .enumerate()
+        .map(|(i, ph)| {
+            let mut p = format!("{}) {} — {}", i + 1, ph.id, ph.roles.join(", "));
+            if ph.parallel {
+                p.push_str(" [in parallel]");
+            }
+            if ph.gate.as_deref() == Some("user") {
+                p.push_str(" [STOP for my approval]");
+            }
+            p
+        })
+        .collect();
+    s.push_str(&phases.join("; "));
+    s.push_str(". ");
+
+    s.push_str(&format!("Task: {}. ", flat(task)));
+    s.push_str(
+        "Spin up the live teammates now via the team feature, drive them through the phases \
+         over the file mailbox, and STOP at each approval gate to ask me before continuing.",
+    );
+    s
+}
+
+/// Load templates for the project context, find the chosen roster + workflow by
+/// id, validate coverage, and compose the prompt — everything the review dialog
+/// needs in one call. Resolves `$HOME`; the testable core is `spinup_preview_at`.
+pub fn spinup_preview(
+    project_path: Option<&str>,
+    roster_id: &str,
+    workflow_id: &str,
+    task: &str,
+) -> Result<SpinupPreview, String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME not set".to_string())?;
+    let project = project_path.map(|p| resolve_project_root(Path::new(p)));
+    spinup_preview_at(&home, project.as_deref(), roster_id, workflow_id, task)
+}
+
+/// Testable core of `spinup_preview` over an injectable home/project root.
+pub fn spinup_preview_at(
+    home: &Path,
+    project: Option<&Path>,
+    roster_id: &str,
+    workflow_id: &str,
+    task: &str,
+) -> Result<SpinupPreview, String> {
+    let t = load_templates_at(home, project);
+    let r = t
+        .teams
+        .iter()
+        .find(|x| x.id == roster_id)
+        .ok_or_else(|| format!("roster `{roster_id}` not found"))?;
+    let w = t
+        .workflows
+        .iter()
+        .find(|x| x.id == workflow_id)
+        .ok_or_else(|| format!("workflow `{workflow_id}` not found"))?;
+    Ok(SpinupPreview {
+        roster_name: r.name.clone(),
+        workflow_name: w.name.clone(),
+        prompt: generate_spinup_prompt(r, w, task),
+        coverage_problems: validate_roster_covers_workflow(r, w),
+    })
+}
+
 // ── Tiny constrained block-YAML parser (no external dep) ──────────────────────
 
 /// Parsed node of our constrained YAML subset.
@@ -951,6 +1104,123 @@ mod tests {
         let t = load_templates_at(&sb.home(), None);
         assert!(t.teams.is_empty());
         assert!(t.workflows.is_empty());
+    }
+
+    // ── spin-up (step 2) tests ───────────────────────────────────────────────
+
+    fn fixture(sb: &Sandbox) {
+        sb.write("home/.claude/agents/dev-agent.md", "---\nname: dev-agent\n---\n");
+        sb.write(
+            "home/.claude/cockpit/teams/dev-team.yaml",
+            "name: dev-team\nroles:\n  product-owner:\n    agent: product-owner-agent\n  dev:\n    agent: dev-agent\n    worktree: true\n  qa:\n    agent: qa-agent\n    mode: headless\n",
+        );
+        sb.write(
+            "home/.claude/cockpit/workflows/ship-it.yaml",
+            "name: ship-it\nlead_hint: >\n  Drive the team\n  through the phases.\nphases:\n  - id: scope\n    role: product-owner\n    gate: user\n  - id: build\n    roles: [dev]\n    parallel: true\n  - id: integrate\n    role: lead\n",
+        );
+    }
+
+    #[test]
+    fn workflow_roles_excludes_lead_and_dedups() {
+        let sb = Sandbox::new("wfroles");
+        fixture(&sb);
+        let t = load_templates_at(&sb.home(), None);
+        let w = &t.workflows[0];
+        // scope→product-owner, build→dev, integrate→lead(excluded)
+        assert_eq!(workflow_roles(w), vec!["product-owner", "dev"]);
+    }
+
+    #[test]
+    fn coverage_passes_when_roster_covers_all_roles() {
+        let sb = Sandbox::new("cover-ok");
+        fixture(&sb);
+        let t = load_templates_at(&sb.home(), None);
+        let problems = validate_roster_covers_workflow(&t.teams[0], &t.workflows[0]);
+        assert!(problems.is_empty(), "dev-team covers ship-it: {problems:?}");
+    }
+
+    #[test]
+    fn coverage_flags_missing_role() {
+        let sb = Sandbox::new("cover-miss");
+        fixture(&sb);
+        // a workflow that needs a `frontend` role the roster lacks
+        sb.write(
+            "home/.claude/cockpit/workflows/needs-fe.yaml",
+            "name: needs-fe\nphases:\n  - id: build\n    roles: [dev, frontend]\n",
+        );
+        let t = load_templates_at(&sb.home(), None);
+        let wf = t.workflows.iter().find(|w| w.name == "needs-fe").unwrap();
+        let problems = validate_roster_covers_workflow(&t.teams[0], wf);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("frontend"));
+    }
+
+    #[test]
+    fn generated_prompt_is_single_line_and_contains_substance() {
+        let sb = Sandbox::new("prompt");
+        fixture(&sb);
+        let t = load_templates_at(&sb.home(), None);
+        let p = generate_spinup_prompt(&t.teams[0], &t.workflows[0], "ship the\nnew dashboard");
+        assert!(!p.contains('\n'), "prompt must be single-line (no premature submit)");
+        assert!(p.contains("dev-team"));
+        assert!(p.contains("Drive the team through the phases.")); // folded hint flattened
+        assert!(p.contains("dev = dev-agent [own git worktree]"));
+        assert!(p.contains("qa = qa-agent [headless]"));
+        assert!(p.contains("scope")); // phase ids present
+        assert!(p.contains("[STOP for my approval]")); // user gate surfaced
+        assert!(p.contains("[in parallel]"));
+        assert!(p.contains("ship the new dashboard")); // task newline flattened
+    }
+
+    #[test]
+    fn spinup_preview_end_to_end() {
+        let sb = Sandbox::new("preview");
+        fixture(&sb);
+        // Injectable core — no global $HOME mutation (safe under parallel tests).
+        let pv = spinup_preview_at(
+            &sb.home(),
+            None,
+            "team:global:dev-team",
+            "workflow:global:ship-it",
+            "do it",
+        )
+        .expect("preview ok");
+        assert_eq!(pv.roster_name, "dev-team");
+        assert_eq!(pv.workflow_name, "ship-it");
+        assert!(pv.coverage_problems.is_empty());
+        assert!(pv.prompt.contains("Task: do it."));
+
+        let missing = spinup_preview_at(
+            &sb.home(),
+            None,
+            "team:global:nope",
+            "workflow:global:ship-it",
+            "x",
+        );
+        assert!(missing.is_err());
+    }
+
+    /// Real-target smoke: compose a spin-up against the live `~/.claude/cockpit`
+    /// (seeded with the example dev-team + ship-it). `#[ignore]`; run with
+    /// `cargo test --lib spinup_real -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn spinup_real_corpus() {
+        let pv = spinup_preview(
+            None,
+            "team:global:dev-team",
+            "workflow:global:ship-it",
+            "smoke: add export-to-CSV",
+        );
+        match pv {
+            Ok(p) => {
+                eprintln!("roster={} workflow={}", p.roster_name, p.workflow_name);
+                eprintln!("coverage_problems={:?}", p.coverage_problems);
+                eprintln!("--- prompt ---\n{}\n--------------", p.prompt);
+                assert!(p.coverage_problems.is_empty(), "dev-team should cover ship-it");
+            }
+            Err(e) => eprintln!("(no seeded templates: {e})"),
+        }
     }
 
     /// The shipped reference examples must parse clean against the real parser —

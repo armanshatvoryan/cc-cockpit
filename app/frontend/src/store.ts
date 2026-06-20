@@ -22,6 +22,8 @@ import {
   loadInventory,
   loadAuditMatrix,
   loadTeamRuns,
+  loadCockpitTemplates,
+  spinupPreview,
   togglePlugin,
   pluginTogglePreview,
   launchCc,
@@ -38,6 +40,9 @@ import {
   type InventoryType,
   type AuditMatrix,
   type TeamRun,
+  type Roster,
+  type Workflow,
+  type SpinupPreview,
 } from "./ipc";
 
 interface CockpitStore extends CockpitState {
@@ -515,6 +520,151 @@ export function focusTeamMemberPane(paneId?: string): boolean {
   focusPane(paneId);
   closeTeamBoard();
   return true;
+}
+
+// ── Spin-up (P3 step 2) ──────────────────────────────────────────────────────
+// Pair a saved roster + workflow + task → review the generated lead prompt →
+// launch: new tab, boot claude, send the prompt. New run shows on the board.
+
+interface TemplatesStore {
+  teams: Roster[];
+  workflows: Workflow[];
+  loading: boolean;
+  error: string | null;
+}
+const [templates, setTemplates] = createStore<TemplatesStore>({
+  teams: [],
+  workflows: [],
+  loading: false,
+  error: null,
+});
+
+interface SpinupPrevStore {
+  data: SpinupPreview | null;
+  loading: boolean;
+  error: string | null;
+}
+const [spinupPrev, setSpinupPrev] = createStore<SpinupPrevStore>({
+  data: null,
+  loading: false,
+  error: null,
+});
+const [spinupOpen, setSpinupOpen] = createSignal(false);
+const [spinupRosterId, setSpinupRosterId] = createSignal<string | null>(null);
+const [spinupWorkflowId, setSpinupWorkflowId] = createSignal<string | null>(null);
+const [spinupTask, setSpinupTaskSig] = createSignal("");
+export { templates, spinupPrev, spinupOpen, spinupRosterId, spinupWorkflowId, spinupTask };
+
+/** Load saved roster + workflow templates for the dropdowns. */
+export async function loadTemplatesNow(): Promise<void> {
+  setTemplates("loading", true);
+  setTemplates("error", null);
+  try {
+    const t = await loadCockpitTemplates(activeProjectPath());
+    setTemplates("teams", t.teams);
+    setTemplates("workflows", t.workflows);
+  } catch (e) {
+    setTemplates("error", String(e));
+  } finally {
+    setTemplates("loading", false);
+  }
+}
+
+/** Recompute the spin-up preview (prompt + coverage) for the current selection. */
+export async function refreshSpinupPreview(): Promise<void> {
+  const rid = spinupRosterId();
+  const wid = spinupWorkflowId();
+  if (!rid || !wid) {
+    setSpinupPrev("data", null);
+    setSpinupPrev("error", null);
+    return;
+  }
+  setSpinupPrev("loading", true);
+  setSpinupPrev("error", null);
+  try {
+    const data = await spinupPreview(rid, wid, spinupTask(), activeProjectPath());
+    setSpinupPrev("data", data);
+  } catch (e) {
+    setSpinupPrev("error", String(e));
+    setSpinupPrev("data", null);
+  } finally {
+    setSpinupPrev("loading", false);
+  }
+}
+
+export function setSpinupRoster(id: string): void {
+  setSpinupRosterId(id);
+  void refreshSpinupPreview();
+}
+export function setSpinupWorkflow(id: string): void {
+  setSpinupWorkflowId(id);
+  void refreshSpinupPreview();
+}
+export function setSpinupTask(t: string): void {
+  setSpinupTaskSig(t);
+  void refreshSpinupPreview();
+}
+
+export function openSpinupDialog(): void {
+  setSpinupOpen(true);
+  setSpinupRosterId(null);
+  setSpinupWorkflowId(null);
+  setSpinupTaskSig("");
+  setSpinupPrev("data", null);
+  setSpinupPrev("error", null);
+  void loadTemplatesNow();
+}
+export function closeSpinupDialog(): void {
+  setSpinupOpen(false);
+}
+
+/** True when the selection is valid and the roster covers the workflow's roles. */
+export function canLaunchTeam(): boolean {
+  const p = spinupPrev.data;
+  return (
+    !!spinupRosterId() &&
+    !!spinupWorkflowId() &&
+    spinupTask().trim().length > 0 &&
+    !!p &&
+    p.coverageProblems.length === 0 &&
+    !spinupPrev.loading
+  );
+}
+
+/** Launch the team: new tab → boot claude → (after boot) send the prompt + CR.
+ *  Mirrors `launchFromInventory`'s plumbing; the boot delay is the grill's
+ *  "review doubles as the timing fix" — send only once the lead is ready. */
+export async function launchTeam(): Promise<void> {
+  if (!canLaunchTeam()) return;
+  const prompt = spinupPrev.data!.prompt;
+  const teamName = spinupPrev.data!.rosterName;
+  const preCwd = activeProjectPath();
+  try {
+    const res = await createTab(teamName);
+    await refreshState();
+    setActiveTabId(res.tabId);
+    setFocusedPaneId(res.paneId);
+    const cwd = preCwd ?? store.panes.find((p) => p.paneId === res.paneId)?.cwd;
+    if (!cwd) {
+      setStore("error", "spin-up failed — no working directory");
+      return;
+    }
+    await launchCc(res.paneId, cwd);
+    const pid = res.paneId;
+    // Boot delay, then paste the single-line prompt and submit with a CR (the
+    // same data path as run_line_in_pane). A short gap lets the text settle.
+    window.setTimeout(() => {
+      void paneSendKeys(pid, prompt);
+      window.setTimeout(() => {
+        void paneSendKeys(pid, "\r");
+        void loadTeamRunsNow();
+      }, 450);
+    }, 3500);
+    closeSpinupDialog();
+    closeTeamBoard();
+  } catch (e) {
+    setStore("error", `spin-up failed: ${String(e)}`);
+  }
 }
 
 /** Toggle a type filter chip (multi-select; empty set shows all). */

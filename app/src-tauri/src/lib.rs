@@ -310,6 +310,20 @@ fn load_team_runs() -> Result<Vec<teamruns::TeamRun>, String> {
     teamruns::load_team_runs()
 }
 
+/// Spin-up review (P3 step 2): pair a saved roster + workflow + task → the
+/// generated lead prompt + role-coverage problems for the review dialog. Pure
+/// read/compose — the actual launch (createTab + launch claude + send) is
+/// orchestrated frontend-side, reusing the existing launch plumbing.
+#[tauri::command]
+fn spinup_preview(
+    project_path: Option<String>,
+    roster_id: String,
+    workflow_id: String,
+    task: String,
+) -> Result<templates::SpinupPreview, String> {
+    templates::spinup_preview(project_path.as_deref(), &roster_id, &workflow_id, &task)
+}
+
 // ── Background tasks ─────────────────────────────────────────────────────────
 
 /// Forward engine `Outbound` -> Tauri events, with output coalescing.
@@ -476,6 +490,7 @@ pub fn run() {
             load_audit_matrix,
             load_cockpit_templates,
             load_team_runs,
+            spinup_preview,
         ])
         .on_window_event(|window, event| {
             // ⌘W (and the red close button) fire CloseRequested, which would close

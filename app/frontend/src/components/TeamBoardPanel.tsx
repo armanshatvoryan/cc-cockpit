@@ -19,6 +19,7 @@ import {
   loadTeamRunsNow,
   focusTeamMemberPane,
   memberPaneIsLive,
+  openSpinupDialog,
 } from "../store";
 
 /** Short session id: drop the `session-` prefix for display. */
@@ -124,6 +125,13 @@ export const TeamBoardPanel: Component = () => {
             <span class="inv-count">{teamBoard.runs.length}</span>
           </Show>
           <span class="inv-spacer" />
+          <button
+            class="tb-new-btn"
+            title="Spin up a team from a saved roster + workflow"
+            onClick={() => openSpinupDialog()}
+          >
+            + team
+          </button>
           <button
             class="inv-icon-btn"
             title="Reload"

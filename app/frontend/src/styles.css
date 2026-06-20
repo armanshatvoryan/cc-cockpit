@@ -1165,3 +1165,106 @@ button {
   color: var(--text-dim);
   opacity: 0.6;
 }
+.tb-new-btn {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.tb-new-btn:hover {
+  background: rgba(56, 189, 248, 0.22);
+}
+
+/* ── Spin-up dialog (P3 step 2) ───────────────────────────────────────────── */
+.modal-wide {
+  width: 560px;
+  max-width: calc(100vw - 48px);
+}
+.su-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  max-height: 64vh;
+  overflow-y: auto;
+}
+.su-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.su-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.su-select,
+.su-task {
+  background: var(--bg-1, #0f1115);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-family: inherit;
+  width: 100%;
+}
+.su-task {
+  resize: vertical;
+  min-height: 38px;
+}
+.su-select:focus,
+.su-task:focus {
+  outline: none;
+  border-color: #38bdf8;
+}
+.su-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.su-preview-head {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.su-prompt {
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.su-coverage {
+  border: 1px solid #7f1d1d;
+  background: rgba(248, 113, 113, 0.08);
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+.su-coverage-head {
+  font-size: 11px;
+  font-weight: 700;
+  color: #fca5a5;
+  margin-bottom: 3px;
+}
+.su-problem {
+  font-size: 11px;
+  color: #fca5a5;
+}
+.su-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

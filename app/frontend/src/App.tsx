@@ -17,6 +17,7 @@ import { TabBar } from "./components/TabBar";
 import { PaneGrid } from "./components/PaneGrid";
 import { InventoryPanel } from "./components/InventoryPanel";
 import { TeamBoardPanel } from "./components/TeamBoardPanel";
+import { SpinupDialog } from "./components/SpinupDialog";
 
 export const App: Component = () => {
   onMount(() => {
@@ -70,6 +71,7 @@ export const App: Component = () => {
 
         <InventoryPanel />
         <TeamBoardPanel />
+        <SpinupDialog />
       </Show>
 
       <Show when={store.error}>
