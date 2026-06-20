@@ -218,3 +218,12 @@ export function onPaneStatus(
 export function onCockpitReconnected(handler: () => void): Promise<UnlistenFn> {
   return listen("cockpit:reconnected", () => handler());
 }
+
+/**
+ * Fired when the user hits ⌘W / the window close button. The backend prevents the
+ * actual window close; the frontend closes the focused pane (or active tab) so a
+ * stray ⌘W never kills the whole cockpit.
+ */
+export function onCloseRequested(handler: () => void): Promise<UnlistenFn> {
+  return listen("cockpit:close-requested", () => handler());
+}

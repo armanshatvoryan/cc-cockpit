@@ -26,7 +26,7 @@ use manager::{
     CloseTabResult, CockpitState, CreateTabResult, SessionManager, SplitPaneResult,
 };
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 /// Shared base64 engine for re-encoding coalesced `pane:data` payloads (must
 /// match the engine's STANDARD alphabet so the frontend decodes identically).
@@ -399,18 +399,15 @@ pub fn run() {
             warm_start,
         ])
         .on_window_event(|window, event| {
-            // Best-effort: when the main window closes, tear down the control
-            // client. We do NOT kill the cockpit session here (panes/tabs should
-            // survive a window close so the user can re-attach); only detach.
-            if let tauri::WindowEvent::Destroyed = event {
-                if let Some(state) = window.app_handle().try_state::<AppState>() {
-                    if let Ok(mut mgr) = state.mgr.lock() {
-                        // Detach the streaming client only; leave the session alive.
-                        // teardown() also kills the session, which we don't want on
-                        // a mere window close — so we just drop the client.
-                        let _ = &mut *mgr; // session intentionally preserved
-                    }
-                }
+            // ⌘W (and the red close button) fire CloseRequested, which would close
+            // the whole window — the user's whole cockpit — on a single keystroke.
+            // Redirect it: DON'T close the window; tell the frontend to close the
+            // focused pane (or the active tab if it's that pane's last one). The app
+            // quits only via ⌘Q. The tmux session survives regardless, so even a
+            // real quit loses nothing — `cockpit_init` re-attaches on next launch.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.emit("cockpit:close-requested", ());
             }
         })
         .run(tauri::generate_context!())

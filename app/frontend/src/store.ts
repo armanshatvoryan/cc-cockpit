@@ -22,6 +22,7 @@ import {
   onPaneStatus,
   onPaneTopology,
   onCockpitReconnected,
+  onCloseRequested,
   type CockpitState,
   type PaneInfo,
   type TabInfo,
@@ -170,7 +171,11 @@ export async function bootCockpit(): Promise<void> {
     void refreshState();
   });
 
-  unlisteners = [unStatus, unTopo, unReconnect];
+  // cockpit:close-requested — ⌘W / window close button. Close the focused pane
+  // (or the active tab if it's the last pane) instead of the whole window.
+  const unCloseReq = await onCloseRequested(() => void closeFocusedPaneOrTab());
+
+  unlisteners = [unStatus, unTopo, unReconnect, unCloseReq];
 }
 
 /** Tear down event subscriptions (window close / HMR). */
@@ -301,6 +306,24 @@ export async function doClosePane(
     await refreshState();
   } catch (e) {
     setStore("error", `close_pane failed: ${String(e)}`);
+  }
+}
+
+/**
+ * ⌘W / window-close handler: close the focused pane, unless it's the only pane in
+ * the active tab — then close the tab. Never closes the window/app. If it's the
+ * last pane of the last tab, the tab closes and the app shows the empty state
+ * (still running; ⌘Q to actually quit).
+ */
+export async function closeFocusedPaneOrTab(): Promise<void> {
+  const tab = activeTab();
+  if (!tab) return;
+  const pid = focusedPaneId();
+  const panes = activePanes();
+  if (pid && panes.length > 1) {
+    await doClosePane(pid);
+  } else {
+    await requestCloseTab(tab.tabId, true); // last pane → close the whole tab
   }
 }
 
