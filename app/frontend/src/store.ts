@@ -20,6 +20,8 @@ import {
   listState,
   setGrid,
   loadInventory,
+  togglePlugin,
+  pluginTogglePreview,
   onPaneStatus,
   onPaneTopology,
   onCockpitReconnected,
@@ -445,4 +447,55 @@ export function inventoryCounts(): Record<InventoryType, number> {
   const c: Record<InventoryType, number> = { skill: 0, subagent: 0, plugin: 0, mcp: 0 };
   for (const i of inventory.items) c[i.type]++;
   return c;
+}
+
+// ── Plugin toggle (P2-F2) — confirm-first, delegated to native, read-back ────
+//
+// Config writes are NEVER optimistic (spec hard rule): a click opens a confirm
+// modal showing the exact `claude plugin …` command; on confirm we run it via
+// the backend (which shells out to native CC), then reload the inventory so the
+// row reflects what's actually on disk. Failure surfaces a toast; the row never
+// moves on its own. Only plugins toggle here — MCP has no safe native disable.
+
+interface PendingToggle {
+  item: InventoryItem;
+  enable: boolean;
+  preview: string;
+}
+const [pendingToggle, setPendingToggle] = createSignal<PendingToggle | null>(null);
+const [togglingId, setTogglingId] = createSignal<string | null>(null);
+
+export { pendingToggle, togglingId };
+
+/** Open the confirm modal for flipping a plugin row (no write yet). */
+export async function requestTogglePlugin(item: InventoryItem): Promise<void> {
+  if (item.type !== "plugin" || !item.toggleable) return;
+  const enable = !item.enabled;
+  let preview = `claude plugin ${enable ? "enable" : "disable"} ${item.name}`;
+  try {
+    preview = await pluginTogglePreview(item.id, enable);
+  } catch {
+    /* fall back to the approximate preview above */
+  }
+  setPendingToggle({ item, enable, preview });
+}
+
+export function cancelToggle(): void {
+  setPendingToggle(null);
+}
+
+/** Confirm the pending toggle: run it, reload on success, toast on failure. */
+export async function confirmToggle(): Promise<void> {
+  const pending = pendingToggle();
+  if (!pending) return;
+  setPendingToggle(null);
+  setTogglingId(pending.item.id);
+  try {
+    await togglePlugin(pending.item.id, pending.enable);
+    await loadInventoryNow(); // read-back: the row reflects disk truth, not a guess
+  } catch (e) {
+    setStore("error", `plugin toggle failed: ${String(e)}`);
+  } finally {
+    setTogglingId(null);
+  }
 }

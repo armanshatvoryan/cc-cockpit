@@ -21,6 +21,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 
 use serde::Serialize;
 
@@ -378,6 +380,125 @@ fn mcp_command_summary(spec: &serde_json::Value) -> String {
     summary
 }
 
+// ── Writes (P2-F2) — DELEGATED to native `claude` subcommands ──────────────────
+//
+// We never hand-patch `~/.claude/settings.json` / `~/.claude.json`. Native CC owns
+// its own config writes (atomic, concurrency-safe), so a plugin toggle shells out
+// to `claude plugin enable|disable <key> --scope <user|project>`. That sidesteps
+// the spec's #1 risk (write contention on the 120 KB shared `~/.claude.json`) and
+// the whole .tmp/.bak/mtime-reassert safe-write suite — native is the writer.
+//
+// MCP toggle is intentionally NOT here: native MCP has no `disable` verb (only a
+// destructive `remove`), so an in-app MCP toggle would lose the server's config.
+// MCP rows stay read-only until there's a safe native primitive.
+//
+// SECURITY: the plugin key is config-derived (read from `enabledPlugins`), not
+// user-typed, but we still (a) validate it against a strict charset and (b) exec
+// `claude` with an argv array — never a shell string — so nothing can inject.
+
+/// Resolve the absolute `claude` binary path via a login shell (the GUI process
+/// doesn't inherit the nvm/zsh PATH that `claude` lives on). Cached on success.
+fn resolve_claude_bin() -> Result<String, String> {
+    static CACHE: OnceLock<String> = OnceLock::new();
+    if let Some(p) = CACHE.get() {
+        return Ok(p.clone());
+    }
+    let out = Command::new("zsh")
+        .args(["-lc", "command -v claude"])
+        .output()
+        .map_err(|e| format!("could not resolve claude: {e}"))?;
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || path.is_empty() {
+        return Err("claude not found on the login-shell PATH".into());
+    }
+    let _ = CACHE.set(path.clone());
+    Ok(path)
+}
+
+/// Plugin keys are `name@marketplace`. Allow only safe identifier characters so a
+/// config-derived value can never become an extra argv token or shell payload.
+fn validate_plugin_key(key: &str) -> Result<(), String> {
+    if key.is_empty() || key.len() > 200 {
+        return Err("invalid plugin key length".into());
+    }
+    if !key
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '-' | '_' | '.' | '/'))
+    {
+        return Err(format!("plugin key has illegal characters: {key}"));
+    }
+    Ok(())
+}
+
+/// Map our inventory scope to the native `--scope` flag value.
+fn scope_flag(scope: &str) -> Result<&'static str, String> {
+    match scope {
+        "global" => Ok("user"),
+        "project" => Ok("project"),
+        other => Err(format!("unknown scope: {other}")),
+    }
+}
+
+/// Parse a plugin item id (`plugin:<scope>:<name@marketplace>`) into its parts.
+fn parse_plugin_id(id: &str) -> Result<(String, String), String> {
+    let mut parts = id.splitn(3, ':');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("plugin"), Some(scope), Some(key)) if !scope.is_empty() && !key.is_empty() => {
+            Ok((scope.to_string(), key.to_string()))
+        }
+        _ => Err(format!("not a plugin item id: {id}")),
+    }
+}
+
+/// Build the exact argv for a plugin toggle. Pure + validated, so it is unit
+/// tested without ever executing `claude`.
+fn plugin_toggle_argv(id: &str, enable: bool) -> Result<Vec<String>, String> {
+    let (scope, key) = parse_plugin_id(id)?;
+    validate_plugin_key(&key)?;
+    let flag = scope_flag(&scope)?;
+    let verb = if enable { "enable" } else { "disable" };
+    Ok(vec![
+        "plugin".into(),
+        verb.into(),
+        key,
+        "--scope".into(),
+        flag.into(),
+    ])
+}
+
+/// Toggle a plugin on/off by delegating to `claude plugin enable|disable`. The
+/// caller (a Tauri command behind a confirm modal) passes the inventory item id;
+/// on success the frontend re-reads the inventory so the row reflects disk truth.
+pub fn toggle_plugin(id: &str, enable: bool) -> Result<(), String> {
+    let argv = plugin_toggle_argv(id, enable)?;
+    let bin = resolve_claude_bin()?;
+    let out = Command::new(&bin)
+        .args(&argv)
+        .output()
+        .map_err(|e| format!("running claude plugin failed: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+    Err(format!(
+        "claude plugin {} failed: {detail}",
+        if enable { "enable" } else { "disable" }
+    ))
+}
+
+/// The human-readable command a confirm modal shows before running a toggle.
+/// (Display only — the real exec uses the validated argv, never this string.)
+pub fn plugin_toggle_preview(id: &str, enable: bool) -> Result<String, String> {
+    let argv = plugin_toggle_argv(id, enable)?;
+    Ok(format!("claude {}", argv.join(" ")))
+}
+
 // ── Minimal YAML frontmatter parser (no dep) ────────────────────────────────────
 
 /// Parse the leading `---\n … \n---` block into `(key, value)` pairs. Handles
@@ -636,6 +757,38 @@ mod tests {
         // No empty descriptions panic; no env values leaked machine-wide.
         let blob = serde_json::to_string(&items).unwrap();
         assert!(!blob.contains("sk-ant"), "an api-key-looking string leaked");
+    }
+
+    // ── P2-F2 toggle: argv construction + validation (no exec) ──────────────
+
+    #[test]
+    fn plugin_toggle_argv_maps_scope_and_verb() {
+        let on = plugin_toggle_argv("plugin:global:caveman@caveman", true).unwrap();
+        assert_eq!(
+            on,
+            vec!["plugin", "enable", "caveman@caveman", "--scope", "user"]
+        );
+        let off = plugin_toggle_argv("plugin:project:foo@bar", false).unwrap();
+        assert_eq!(off, vec!["plugin", "disable", "foo@bar", "--scope", "project"]);
+    }
+
+    #[test]
+    fn plugin_toggle_preview_is_human_readable() {
+        let p = plugin_toggle_preview("plugin:global:caveman@caveman", false).unwrap();
+        assert_eq!(p, "claude plugin disable caveman@caveman --scope user");
+    }
+
+    #[test]
+    fn plugin_toggle_rejects_injection_and_bad_ids() {
+        // Shell metacharacters in the key are refused before any exec.
+        assert!(plugin_toggle_argv("plugin:global:foo; rm -rf ~", true).is_err());
+        assert!(plugin_toggle_argv("plugin:global:foo && bar", true).is_err());
+        assert!(plugin_toggle_argv("plugin:global:foo`whoami`", true).is_err());
+        assert!(plugin_toggle_argv("plugin:global:foo$(id)", true).is_err());
+        // Not a plugin id / unknown scope.
+        assert!(plugin_toggle_argv("skill:global:brief", true).is_err());
+        assert!(plugin_toggle_argv("plugin:weird:foo@bar", true).is_err());
+        assert!(plugin_toggle_argv("plugin:global:", true).is_err());
     }
 
     #[test]

@@ -251,6 +251,22 @@ fn load_inventory(
     inventory::load_inventory(project_path.as_deref())
 }
 
+/// Inventory toggle (P2-F2): enable/disable a plugin by DELEGATING to
+/// `claude plugin enable|disable <key> --scope …`. We never hand-patch the
+/// config — native CC owns that write. `id` is the inventory item id
+/// (`plugin:<scope>:<name@marketplace>`). The frontend re-reads on success.
+#[tauri::command]
+fn toggle_plugin(id: String, enable: bool) -> Result<(), String> {
+    inventory::toggle_plugin(&id, enable)
+}
+
+/// The exact `claude …` command a confirm modal shows before a toggle runs
+/// (display only; the real exec uses a validated argv array, not this string).
+#[tauri::command]
+fn plugin_toggle_preview(id: String, enable: bool) -> Result<String, String> {
+    inventory::plugin_toggle_preview(&id, enable)
+}
+
 // ── Background tasks ─────────────────────────────────────────────────────────
 
 /// Forward engine `Outbound` -> Tauri events, with output coalescing.
@@ -411,6 +427,8 @@ pub fn run() {
             list_state,
             warm_start,
             load_inventory,
+            toggle_plugin,
+            plugin_toggle_preview,
         ])
         .on_window_event(|window, event| {
             // ⌘W (and the red close button) fire CloseRequested, which would close

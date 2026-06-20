@@ -212,6 +212,21 @@ export function loadInventory(projectPath?: string): Promise<InventoryItem[]> {
 }
 
 /**
+ * Toggle a plugin on/off (P2-F2). DELEGATES to `claude plugin enable|disable`
+ * — the cockpit never hand-patches config. `id` is the inventory item id. After
+ * it resolves, reload the inventory so the row reflects disk truth (never flip
+ * optimistically — config writes are confirm-first + read-back only).
+ */
+export function togglePlugin(id: string, enable: boolean): Promise<void> {
+  return invoke<void>("toggle_plugin", { id, enable });
+}
+
+/** The exact `claude …` command a confirm modal shows before a toggle runs. */
+export function pluginTogglePreview(id: string, enable: boolean): Promise<string> {
+  return invoke<string>("plugin_toggle_preview", { id, enable });
+}
+
+/**
  * Warm-start replay for a pane: returns its current screen + scrollback
  * (escape-aware) base64-encoded. Called once on XtermHost mount so a pane the
  * GUI re-attaches to paints its existing content instead of staying blank (the

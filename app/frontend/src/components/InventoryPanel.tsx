@@ -22,6 +22,11 @@ import {
   setInvQueryFilter,
   filteredInventory,
   inventoryCounts,
+  requestTogglePlugin,
+  togglingId,
+  pendingToggle,
+  confirmToggle,
+  cancelToggle,
 } from "../store";
 
 const TYPE_META: Record<InventoryType, { label: string; glyph: string; color: string }> = {
@@ -34,9 +39,13 @@ const TYPE_META: Record<InventoryType, { label: string; glyph: string; color: st
 const TYPES: InventoryType[] = ["skill", "subagent", "plugin", "mcp"];
 const SCOPES: Array<"all" | "global" | "project"> = ["all", "global", "project"];
 
-/** The state pill on the right of a row — mirrors backend truth exactly. */
+/** The state control on the right of a row — mirrors backend truth exactly.
+ *  Plugins get a clickable toggle (confirm-first); everything else is a static
+ *  pill. MCP shows on/off but has no in-app toggle yet (no safe native verb). */
 const StatePill: Component<{ item: InventoryItem }> = (props) => {
   const i = props.item;
+  const busy = () => togglingId() === i.id;
+
   if (i.parseError) {
     return (
       <span class="inv-pill inv-pill-err" title={i.parseError}>
@@ -52,10 +61,66 @@ const StatePill: Component<{ item: InventoryItem }> = (props) => {
       </span>
     );
   }
-  return i.enabled ? (
-    <span class="inv-pill inv-pill-on">ON</span>
-  ) : (
-    <span class="inv-pill inv-pill-off">OFF</span>
+  if (i.type === "plugin") {
+    return (
+      <button
+        class="inv-pill inv-pill-btn"
+        classList={{ "inv-pill-on": i.enabled, "inv-pill-off": !i.enabled }}
+        disabled={busy()}
+        title={busy() ? "working…" : i.enabled ? "Click to disable" : "Click to enable"}
+        onClick={() => void requestTogglePlugin(i)}
+      >
+        {busy() ? "…" : i.enabled ? "ON" : "OFF"}
+      </button>
+    );
+  }
+  // MCP: real state, but no in-app toggle this slice.
+  return (
+    <span
+      class="inv-pill"
+      classList={{ "inv-pill-on": i.enabled, "inv-pill-off": !i.enabled }}
+      title="MCP toggle not available yet — use `claude mcp`"
+    >
+      {i.enabled ? "ON" : "OFF"}
+    </span>
+  );
+};
+
+/** Confirm-first modal for a plugin toggle — shows the exact native command. */
+const ConfirmToggle: Component = () => {
+  return (
+    <Show when={pendingToggle()}>
+      {(pt) => (
+        <div class="modal-overlay" onClick={() => cancelToggle()}>
+          <div class="modal" onClick={(e) => e.stopPropagation()}>
+            <div class="modal-header">
+              <span class="modal-title">
+                {pt().enable ? "Enable" : "Disable"} plugin · {pt().item.name}
+              </span>
+              <button class="modal-x" onClick={() => cancelToggle()} aria-label="Cancel">
+                ×
+              </button>
+            </div>
+            <p class="confirm-body">
+              Runs this native command ({pt().item.scope} scope) — the cockpit
+              never edits config directly:
+            </p>
+            <pre class="confirm-cmd">{pt().preview}</pre>
+            <div class="modal-actions">
+              <button class="btn btn-ghost" onClick={() => cancelToggle()}>
+                Cancel
+              </button>
+              <button
+                class="btn btn-primary"
+                onClick={() => void confirmToggle()}
+              >
+                {pt().enable ? "Enable" : "Disable"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Show>
   );
 };
 
@@ -182,9 +247,10 @@ export const InventoryPanel: Component = () => {
         </div>
 
         <footer class="inv-footer">
-          read-only · toggles next (P2-F2) · ⌘I to close
+          plugins toggle via native claude · ⌘I to close
         </footer>
       </aside>
+      <ConfirmToggle />
     </Show>
   );
 };
