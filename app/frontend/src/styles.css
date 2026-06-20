@@ -1028,3 +1028,140 @@ button {
   line-height: 1;
   cursor: default;
 }
+
+/* ── Team board (P3 step 3) — reuses the inv-panel shell ──────────────────── */
+.tb-run {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-3);
+  margin: 8px 10px;
+  overflow: hidden;
+}
+.tb-run-err {
+  border-color: #7f1d1d;
+}
+.tb-run-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+.tb-run-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+.tb-run-id {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.tb-spacer {
+  flex: 1 1 auto;
+}
+.tb-badge {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.tb-badge-warn {
+  color: #0f1115;
+  background: #fbbf24;
+  font-weight: 700;
+}
+.tb-run-error {
+  padding: 8px 10px;
+  font-size: 11px;
+  color: #fca5a5;
+}
+.tb-members {
+  display: flex;
+  flex-direction: column;
+}
+.tb-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+}
+.tb-member:first-child {
+  border-top: none;
+}
+.tb-member-lead {
+  background: rgba(56, 189, 248, 0.05);
+}
+.tb-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.tb-member-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tb-member-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tb-member-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tb-tag {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.tb-tag-lead {
+  color: #0f1115;
+  background: #38bdf8;
+}
+.tb-agent {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.tb-model {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 9px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+.tb-cwd {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tb-pane {
+  flex: 0 0 auto;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+.tb-pane-link {
+  border: 1px solid var(--border-strong);
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+  cursor: pointer;
+}
+.tb-pane-link:hover {
+  background: rgba(56, 189, 248, 0.22);
+}
+.tb-pane-dim {
+  color: var(--text-dim);
+  opacity: 0.6;
+}

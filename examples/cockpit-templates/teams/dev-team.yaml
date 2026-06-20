@@ -1,0 +1,23 @@
+# Cockpit ROSTER (the WHO) — a reusable team definition.
+# Place real ones at ~/.claude/cockpit/teams/<name>.yaml (global) or
+# <project>/.claude/cockpit/teams/<name>.yaml (project). Loaded + validated by
+# the cockpit; paired with a workflow + a per-run task at spin-up.
+name: dev-team
+description: Standard build team — PO scopes, dev+frontend build, qa verifies.
+default_cwd: .            # `.` = the active tab's project; or an absolute path
+roles:
+  product-owner:
+    agent: product-owner-agent
+    mode: live             # live = watchable tmux pane (default) | headless = in-process
+  dev:
+    agent: dev-agent
+    model: claude-opus-4-8
+    worktree: true         # run in its own git worktree (native isolation: worktree)
+    mode: live
+  frontend:
+    agent: frontend-agent
+    worktree: true
+    mode: live
+  qa:
+    agent: qa-agent
+    mode: headless

@@ -85,6 +85,93 @@ export interface AuditMatrix {
   rows: AuditRow[];
 }
 
+// ── Cockpit team templates (P3 step 1) ───────────────────────────────────────
+// Saved, reusable ROSTER (who) + WORKFLOW (how) artifacts under
+// `~/.claude/cockpit/{teams,workflows}/*.yaml` (global) and the project mirror.
+
+export interface RoleSpec {
+  /** Role name (the YAML map key); workflows refer to roles by this. */
+  role: string;
+  /** Agent that fills the role — a `~/.claude/agents/<x>.md` or built-in type. */
+  agent: string;
+  model?: string;
+  worktree: boolean;
+  mode: "live" | "headless" | string;
+}
+
+export interface Roster {
+  /** `"team:<scope>:<name>"`. */
+  id: string;
+  scope: "global" | "project";
+  name: string;
+  description: string;
+  path: string;
+  roles: RoleSpec[];
+  defaultCwd?: string;
+  /** Non-fatal validation warnings (bad mode, unknown agent ref, …). */
+  problems?: string[];
+  parseError?: string;
+}
+
+export interface PhaseSpec {
+  id: string;
+  /** Unified from `role:` and `roles: [..]`. `lead` allowed. */
+  roles?: string[];
+  parallel: boolean;
+  gate?: "user" | string;
+}
+
+export interface Workflow {
+  /** `"workflow:<scope>:<name>"`. */
+  id: string;
+  scope: "global" | "project";
+  name: string;
+  description: string;
+  path: string;
+  leadHint?: string;
+  phases: PhaseSpec[];
+  problems?: string[];
+  parseError?: string;
+}
+
+export interface CockpitTemplates {
+  teams: Roster[];
+  workflows: Workflow[];
+}
+
+// ── Live team runs (P3 step 3 — the team board) ──────────────────────────────
+// READ-ONLY view of native Agent Teams sessions on disk
+// (`~/.claude/teams/session-*/` config + inboxes + tasks).
+
+export interface TeamMember {
+  agentId: string;
+  name: string;
+  agentType: string;
+  /** `tmux` → "live", `in-process` → "headless". */
+  mode: "live" | "headless" | string;
+  backendType: "tmux" | "in-process" | string;
+  /** `"%1"` real pane on the lead's socket, `"leader"`, or absent. */
+  tmuxPaneId?: string;
+  model?: string;
+  cwd?: string;
+  color?: string;
+  isActive: boolean;
+  isLead: boolean;
+}
+
+export interface TeamRun {
+  /** Session dir name, e.g. `session-41b57ff1`. */
+  sessionId: string;
+  name: string;
+  leadAgentId: string;
+  createdAt?: number;
+  members: TeamMember[];
+  /** Undelivered messages summed across the file mailbox. */
+  inboxDepth: number;
+  taskCount: number;
+  parseError?: string;
+}
+
 export interface CreateTabResult {
   tabId: string;
   tmuxWindowId: string;
@@ -262,6 +349,27 @@ export function pluginTogglePreview(id: string, enable: boolean): Promise<string
  */
 export function loadAuditMatrix(projectPaths: string[]): Promise<AuditMatrix> {
   return invoke<AuditMatrix>("load_audit_matrix", { projectPaths });
+}
+
+/**
+ * Cockpit team templates (P3 step 1): the saved roster + workflow YAML under
+ * `~/.claude/cockpit/{teams,workflows}/` (global) + the active project mirror.
+ * Pure read + validate; a malformed file degrades to one row with `parseError`,
+ * never a blank panel.
+ */
+export function loadCockpitTemplates(projectPath?: string): Promise<CockpitTemplates> {
+  return invoke<CockpitTemplates>("load_cockpit_templates", {
+    projectPath: projectPath ?? null,
+  });
+}
+
+/**
+ * Live team board (P3 step 3): native Agent Teams sessions on disk, newest
+ * first. Pure read — a rotated/garbled run degrades to an empty list or one
+ * `parseError` row, never an error.
+ */
+export function loadTeamRuns(): Promise<TeamRun[]> {
+  return invoke<TeamRun[]>("load_team_runs");
 }
 
 /**

@@ -21,6 +21,7 @@ import {
   setGrid,
   loadInventory,
   loadAuditMatrix,
+  loadTeamRuns,
   togglePlugin,
   pluginTogglePreview,
   launchCc,
@@ -36,6 +37,7 @@ import {
   type InventoryItem,
   type InventoryType,
   type AuditMatrix,
+  type TeamRun,
 } from "./ipc";
 
 interface CockpitStore extends CockpitState {
@@ -449,6 +451,70 @@ export function closeInventory(): void {
 export function toggleInventory(): void {
   if (inventoryOpen()) closeInventory();
   else openInventory();
+}
+
+// ── Live team board (P3 step 3) ──────────────────────────────────────────────
+// Read-only view of native Agent Teams sessions on disk. Newest-first list of
+// runs; each run a roster of members. A live member with a real `%N` pane links
+// to that pane (the socket spike confirmed teammates land on `-L cockpit`).
+
+interface TeamBoardStore {
+  runs: TeamRun[];
+  loading: boolean;
+  error: string | null;
+}
+const [teamBoard, setTeamBoard] = createStore<TeamBoardStore>({
+  runs: [],
+  loading: false,
+  error: null,
+});
+const [teamBoardOpen, setTeamBoardOpen] = createSignal(false);
+export { teamBoard, teamBoardOpen };
+
+/** Reload the live team runs from native session files. */
+export async function loadTeamRunsNow(): Promise<void> {
+  setTeamBoard("loading", true);
+  setTeamBoard("error", null);
+  try {
+    const runs = await loadTeamRuns();
+    setTeamBoard("runs", runs);
+  } catch (e) {
+    setTeamBoard("error", String(e));
+    setTeamBoard("runs", []);
+  } finally {
+    setTeamBoard("loading", false);
+  }
+}
+
+export function openTeamBoard(): void {
+  setTeamBoardOpen(true);
+  void loadTeamRunsNow();
+}
+export function closeTeamBoard(): void {
+  setTeamBoardOpen(false);
+}
+export function toggleTeamBoard(): void {
+  if (teamBoardOpen()) closeTeamBoard();
+  else openTeamBoard();
+}
+
+/** True when this member's `%N` pane is one the cockpit currently tracks — only
+ *  then can a click focus it (the team was launched in this cockpit). */
+export function memberPaneIsLive(paneId?: string): boolean {
+  if (!paneId || !paneId.startsWith("%")) return false;
+  return store.panes.some((p) => p.paneId === paneId);
+}
+
+/** Link a board row to its pane: switch to the pane's tab and focus it. No-op
+ *  (returns false) if the pane isn't tracked here (e.g. a team run elsewhere). */
+export function focusTeamMemberPane(paneId?: string): boolean {
+  if (!paneId) return false;
+  const pane = store.panes.find((p) => p.paneId === paneId);
+  if (!pane) return false;
+  setActiveTabId(pane.tabId);
+  focusPane(paneId);
+  closeTeamBoard();
+  return true;
 }
 
 /** Toggle a type filter chip (multi-select; empty set shows all). */

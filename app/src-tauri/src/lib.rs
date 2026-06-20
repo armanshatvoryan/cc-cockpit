@@ -15,6 +15,8 @@
 pub mod inventory;
 pub mod manager;
 pub mod status;
+pub mod teamruns;
+pub mod templates;
 pub mod tmux;
 
 use std::collections::HashMap;
@@ -289,6 +291,25 @@ fn load_audit_matrix(project_paths: Vec<String>) -> Result<inventory::AuditMatri
     inventory::load_audit_matrix(project_paths)
 }
 
+/// Cockpit team templates (P3 step 1): the saved **roster** (WHO) + **workflow**
+/// (HOW) YAML artifacts under `~/.claude/cockpit/{teams,workflows}/` (global) and
+/// `<project>/.claude/cockpit/...` (project). Pure read + validate; the loader is
+/// fault-tolerant (a bad file = one row with `parseError`, never a blank panel).
+#[tauri::command]
+fn load_cockpit_templates(
+    project_path: Option<String>,
+) -> Result<templates::CockpitTemplates, String> {
+    templates::load_cockpit_templates(project_path.as_deref())
+}
+
+/// Live team board (P3 step 3): READ-ONLY view of native Agent Teams sessions on
+/// disk (`~/.claude/teams/session-*/` config + inboxes + tasks), newest first.
+/// Pure read — writes nothing, spawns nothing; fault-tolerant to rotated dirs.
+#[tauri::command]
+fn load_team_runs() -> Result<Vec<teamruns::TeamRun>, String> {
+    teamruns::load_team_runs()
+}
+
 // ── Background tasks ─────────────────────────────────────────────────────────
 
 /// Forward engine `Outbound` -> Tauri events, with output coalescing.
@@ -453,6 +474,8 @@ pub fn run() {
             toggle_plugin,
             plugin_toggle_preview,
             load_audit_matrix,
+            load_cockpit_templates,
+            load_team_runs,
         ])
         .on_window_event(|window, event| {
             // ⌘W (and the red close button) fire CloseRequested, which would close

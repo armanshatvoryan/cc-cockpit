@@ -5,7 +5,8 @@
 //   ⌘D          split focused pane horizontally (side-by-side)
 //   ⌘⇧D         split focused pane vertically (stacked)
 //   ⌘I          toggle the inventory panel
-//   Esc         close the inventory panel (when open)
+//   ⌘⇧T         toggle the live team board
+//   Esc         close the inventory panel / team board (when open)
 //
 // We bind on the window in capture mode and only act on our combos so terminal
 // keystrokes (which xterm handles) are never swallowed.
@@ -19,15 +20,19 @@ import {
   toggleInventory,
   closeInventory,
   inventoryOpen,
+  toggleTeamBoard,
+  closeTeamBoard,
+  teamBoardOpen,
 } from "./store";
 
 export function installKeyboard(): void {
   function onKey(e: KeyboardEvent) {
     // Esc closes the inventory panel if it's open (intercept BEFORE xterm so a
     // stray Esc dismisses the overlay rather than reaching a terminal process).
-    if (e.key === "Escape" && inventoryOpen()) {
+    if (e.key === "Escape" && (inventoryOpen() || teamBoardOpen())) {
       e.preventDefault();
-      closeInventory();
+      if (inventoryOpen()) closeInventory();
+      if (teamBoardOpen()) closeTeamBoard();
       return;
     }
 
@@ -43,10 +48,11 @@ export function installKeyboard(): void {
 
     const k = e.key.toLowerCase();
 
-    // ⌘T — new tab.
+    // ⌘T — new tab.  ⌘⇧T — toggle the live team board.
     if (k === "t") {
       e.preventDefault();
-      void newTab();
+      if (e.shiftKey) toggleTeamBoard();
+      else void newTab();
       return;
     }
 
