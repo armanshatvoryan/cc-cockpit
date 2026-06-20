@@ -194,6 +194,20 @@ fn launch_shell(state: State<'_, AppState>, pane_id: String, cwd: String) -> Res
     mgr.launch_shell(&pane_id, &cwd)
 }
 
+/// Launch `claude --agent <name>` in a pane (P2-F4). The backend validates +
+/// shell-quotes the agent name (security boundary), so a config-derived name
+/// can't inject. Used by launch-from-inventory on a subagent row.
+#[tauri::command]
+fn launch_agent(
+    state: State<'_, AppState>,
+    pane_id: String,
+    cwd: String,
+    agent: String,
+) -> Result<(), String> {
+    let mut mgr = state.mgr.lock().unwrap();
+    mgr.launch_agent(&pane_id, &cwd, &agent)
+}
+
 #[tauri::command]
 fn pane_send_keys(state: State<'_, AppState>, pane_id: String, data: String) -> Result<(), String> {
     let mut mgr = state.mgr.lock().unwrap();
@@ -428,6 +442,7 @@ pub fn run() {
             close_pane,
             launch_cc,
             launch_shell,
+            launch_agent,
             pane_send_keys,
             pane_resize,
             set_grid,

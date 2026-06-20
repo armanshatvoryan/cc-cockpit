@@ -145,6 +145,17 @@ pub fn is_server_gone(err: &str) -> bool {
         || e.contains("server exited")
 }
 
+/// A `~/.claude/agents/*.md` `name` is config-derived; before it reaches a
+/// `claude --agent <name>` command line we require a strict identifier charset
+/// so it can never inject an extra flag or shell payload (P2-F4 launch).
+pub fn is_valid_agent_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 120
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 // ── SessionManager ───────────────────────────────────────────────────────────
 
 /// Owns the live control client. The in-memory model is intentionally derived
@@ -382,6 +393,23 @@ impl SessionManager {
     /// Launch a plain shell command-line context in a pane: just `cd <cwd>`.
     pub fn launch_shell(&mut self, pane_id: &str, cwd: &str) -> Result<(), String> {
         let cmd = format!("cd {}", tmux::shq(cwd));
+        self.run_line_in_pane(pane_id, &cmd)
+    }
+
+    /// Launch `claude --agent <name>` in a pane (P2-F4 launch-from-inventory).
+    /// The agent name is config-derived (a `~/.claude/agents/*.md` `name`), so we
+    /// validate it against a strict charset AND shell-quote it before it reaches
+    /// the command line — a name can never inject an extra flag or shell payload.
+    pub fn launch_agent(&mut self, pane_id: &str, cwd: &str, agent: &str) -> Result<(), String> {
+        if !is_valid_agent_name(agent) {
+            return Err(format!("invalid agent name: {agent}"));
+        }
+        let cmd = format!(
+            "cd {cwd} && COCKPIT_PANE_ID={pane} claude --agent {agent}",
+            cwd = tmux::shq(cwd),
+            pane = pane_id,
+            agent = tmux::shq(agent),
+        );
         self.run_line_in_pane(pane_id, &cmd)
     }
 
@@ -753,6 +781,19 @@ mod tests {
         assert_eq!(tab_id_for_index(0), "tab-0");
         assert_eq!(parse_tab_index("tab-7").unwrap(), 7);
         assert!(parse_tab_index("window-3").is_err());
+    }
+
+    #[test]
+    fn agent_name_validation_blocks_injection() {
+        assert!(is_valid_agent_name("dev-agent"));
+        assert!(is_valid_agent_name("qa_agent.v2"));
+        // Anything with shell metacharacters / spaces / flags is rejected.
+        assert!(!is_valid_agent_name(""));
+        assert!(!is_valid_agent_name("dev --dangerously-skip-permissions"));
+        assert!(!is_valid_agent_name("a; rm -rf ~"));
+        assert!(!is_valid_agent_name("a$(id)"));
+        assert!(!is_valid_agent_name("a`whoami`"));
+        assert!(!is_valid_agent_name("a b"));
     }
 
     #[test]

@@ -23,6 +23,9 @@ import {
   loadAuditMatrix,
   togglePlugin,
   pluginTogglePreview,
+  launchCc,
+  launchAgent,
+  paneSendKeys,
   onPaneStatus,
   onPaneTopology,
   onCockpitReconnected,
@@ -529,6 +532,45 @@ export async function requestTogglePlugin(item: InventoryItem): Promise<void> {
 
 export function cancelToggle(): void {
   setPendingToggle(null);
+}
+
+// ── Launch from inventory (P2-F4) ────────────────────────────────────────────
+//
+// A skill/subagent row's ▶ opens it in a NEW tab (never clobbers a live pane).
+// Subagent → `claude --agent <name>` (backend-validated). Skill → `claude` at the
+// project cwd, then best-effort pre-type `/<skill> ` once it boots (no Enter, so
+// the user adds args + runs it). Plugins/MCP aren't launchable.
+
+const NAME_OK = /^[A-Za-z0-9._-]+$/;
+
+export async function launchFromInventory(item: InventoryItem): Promise<void> {
+  if (item.type !== "skill" && item.type !== "subagent") return;
+  if (!NAME_OK.test(item.name)) {
+    setStore("error", `cannot launch — unsafe name: ${item.name}`);
+    return;
+  }
+  const preCwd = activeProjectPath();
+  try {
+    const res = await createTab(item.name);
+    await refreshState();
+    setActiveTabId(res.tabId);
+    setFocusedPaneId(res.paneId);
+    // The new pane's own cwd is always a real absolute path — a safe fallback.
+    const cwd = preCwd ?? store.panes.find((p) => p.paneId === res.paneId)?.cwd;
+    if (!cwd) {
+      setStore("error", "launch failed — no working directory");
+      return;
+    }
+    if (item.type === "subagent") {
+      await launchAgent(res.paneId, cwd, item.name);
+    } else {
+      await launchCc(res.paneId, cwd);
+      window.setTimeout(() => paneSendKeys(res.paneId, `/${item.name} `), 2500);
+    }
+    closeInventory(); // reveal the new pane
+  } catch (e) {
+    setStore("error", `launch failed: ${String(e)}`);
+  }
 }
 
 /** Confirm the pending toggle: run it, reload on success, toast on failure. */

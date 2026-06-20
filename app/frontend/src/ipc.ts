@@ -186,6 +186,15 @@ export function launchShell(paneId: string, cwd: string): Promise<void> {
 }
 
 /**
+ * Launch `claude --agent <name>` in a pane (P2-F4 launch-from-inventory). The
+ * backend validates + shell-quotes the agent name, so a config-derived name
+ * can't inject a flag or shell payload.
+ */
+export function launchAgent(paneId: string, cwd: string, agent: string): Promise<void> {
+  return invoke<void>("launch_agent", { paneId, cwd, agent });
+}
+
+/**
  * Send literal VT input to a pane. Fire-and-forget: we deliberately do NOT
  * await at call sites so typing never blocks on IPC.
  */

@@ -30,6 +30,7 @@ import {
   pendingToggle,
   confirmToggle,
   cancelToggle,
+  launchFromInventory,
 } from "../store";
 
 const TYPE_META: Record<InventoryType, { label: string; glyph: string; color: string }> = {
@@ -149,6 +150,15 @@ const InventoryRow: Component<{ item: InventoryItem }> = (props) => {
           <div class="inv-detail">{i.detail}</div>
         </Show>
       </div>
+      <Show when={i.type === "skill" || i.type === "subagent"}>
+        <button
+          class="inv-launch"
+          title={`Launch ${i.name} in a new tab`}
+          onClick={() => void launchFromInventory(i)}
+        >
+          ▶
+        </button>
+      </Show>
       <StatePill item={i} />
     </div>
   );
