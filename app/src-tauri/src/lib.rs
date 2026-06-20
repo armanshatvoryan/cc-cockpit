@@ -12,6 +12,7 @@
 //! The IPC contract this exposes is documented in the final report; command
 //! names + payloads are stable for the frontend to build against.
 
+pub mod inventory;
 pub mod manager;
 pub mod status;
 pub mod tmux;
@@ -238,6 +239,18 @@ fn warm_start(state: State<'_, AppState>, pane_id: String) -> Result<WarmStartPa
     Ok(WarmStartPayload { bytes_b64 })
 }
 
+/// Inventory mission-control (P2-F1): the unified read-only browser of skills,
+/// subagents, plugins, and MCP servers across the global `~/.claude` scope and
+/// (when `project_path` is the active tab's cwd) the per-project `.claude/`
+/// scope. Pure config reads — no tmux, no SessionManager. SECURITY: never opens
+/// `.env`, never emits MCP env values.
+#[tauri::command]
+fn load_inventory(
+    project_path: Option<String>,
+) -> Result<Vec<inventory::InventoryItem>, String> {
+    inventory::load_inventory(project_path.as_deref())
+}
+
 // ── Background tasks ─────────────────────────────────────────────────────────
 
 /// Forward engine `Outbound` -> Tauri events, with output coalescing.
@@ -397,6 +410,7 @@ pub fn run() {
             interrupt_pane,
             list_state,
             warm_start,
+            load_inventory,
         ])
         .on_window_event(|window, event| {
             // ⌘W (and the red close button) fire CloseRequested, which would close

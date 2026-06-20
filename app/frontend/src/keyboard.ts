@@ -4,6 +4,8 @@
 //   ⌘1..⌘9      switch to the Nth tab
 //   ⌘D          split focused pane horizontally (side-by-side)
 //   ⌘⇧D         split focused pane vertically (stacked)
+//   ⌘I          toggle the inventory panel
+//   Esc         close the inventory panel (when open)
 //
 // We bind on the window in capture mode and only act on our combos so terminal
 // keystrokes (which xterm handles) are never swallowed.
@@ -14,10 +16,21 @@ import {
   switchTabByIndex,
   doSplit,
   focusedPaneId,
+  toggleInventory,
+  closeInventory,
+  inventoryOpen,
 } from "./store";
 
 export function installKeyboard(): void {
   function onKey(e: KeyboardEvent) {
+    // Esc closes the inventory panel if it's open (intercept BEFORE xterm so a
+    // stray Esc dismisses the overlay rather than reaching a terminal process).
+    if (e.key === "Escape" && inventoryOpen()) {
+      e.preventDefault();
+      closeInventory();
+      return;
+    }
+
     // macOS: Cmd is metaKey. Ignore plain typing / non-meta combos.
     if (!e.metaKey) return;
 
@@ -42,6 +55,13 @@ export function installKeyboard(): void {
       e.preventDefault();
       const pid = focusedPaneId();
       if (pid) void doSplit(pid, e.shiftKey ? "v" : "h");
+      return;
+    }
+
+    // ⌘I — toggle the inventory panel.
+    if (k === "i") {
+      e.preventDefault();
+      toggleInventory();
       return;
     }
   }

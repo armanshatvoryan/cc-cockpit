@@ -15,6 +15,7 @@ import {
 import { installKeyboard } from "./keyboard";
 import { TabBar } from "./components/TabBar";
 import { PaneGrid } from "./components/PaneGrid";
+import { InventoryPanel } from "./components/InventoryPanel";
 
 export const App: Component = () => {
   onMount(() => {
@@ -62,9 +63,11 @@ export const App: Component = () => {
             {store.panes.length} pane{store.panes.length === 1 ? "" : "s"}
           </span>
           <span class="footer-keys">
-            ⌘T tab · ⌘1-9 switch · ⌘D split · ⌘⇧D split↕
+            ⌘T tab · ⌘1-9 switch · ⌘D split · ⌘⇧D split↕ · ⌘I inventory
           </span>
         </footer>
+
+        <InventoryPanel />
       </Show>
 
       <Show when={store.error}>

@@ -19,6 +19,7 @@ import {
   closePane,
   listState,
   setGrid,
+  loadInventory,
   onPaneStatus,
   onPaneTopology,
   onCockpitReconnected,
@@ -26,6 +27,8 @@ import {
   type CockpitState,
   type PaneInfo,
   type TabInfo,
+  type InventoryItem,
+  type InventoryType,
 } from "./ipc";
 
 interface CockpitStore extends CockpitState {
@@ -338,3 +341,108 @@ export function clearError(): void {
 /** Convenience: the focused pane's PaneInfo, for keyboard shortcuts. */
 export const focusedPane: Accessor<PaneInfo | undefined> = () =>
   store.panes.find((p) => p.paneId === focusedPaneId());
+
+// ── Inventory mission-control (P2-F1) ────────────────────────────────────────
+//
+// The unified read-only browser. Opened with ⌘I as a right-side panel over the
+// pane grid. Loads on open (and on demand) from `load_inventory`, scoped to the
+// active tab's project root. Filters (type / scope / text) are pure client-side.
+
+interface InventoryStore {
+  items: InventoryItem[];
+  loading: boolean;
+  error: string | null;
+}
+const [inventory, setInventory] = createStore<InventoryStore>({
+  items: [],
+  loading: false,
+  error: null,
+});
+const [inventoryOpen, setInventoryOpen] = createSignal(false);
+// Empty type set = "all types". Scope is a single segmented choice.
+const [invTypes, setInvTypes] = createSignal<Set<InventoryType>>(new Set());
+const [invScope, setInvScope] = createSignal<"all" | "global" | "project">("all");
+const [invQuery, setInvQuery] = createSignal("");
+
+export { inventory, inventoryOpen, invTypes, invScope, invQuery };
+
+/** Project root for project-scope inventory = the active tab's first pane cwd. */
+function activeProjectPath(): string | undefined {
+  const cwd = activePanes()[0]?.cwd;
+  return cwd && cwd.trim() ? cwd : undefined;
+}
+
+/** Reload the inventory from the backend for the current project context. */
+export async function loadInventoryNow(): Promise<void> {
+  setInventory("loading", true);
+  setInventory("error", null);
+  try {
+    const items = await loadInventory(activeProjectPath());
+    setInventory("items", items);
+  } catch (e) {
+    setInventory("error", String(e));
+    setInventory("items", []);
+  } finally {
+    setInventory("loading", false);
+  }
+}
+
+export function openInventory(): void {
+  setInventoryOpen(true);
+  void loadInventoryNow();
+}
+export function closeInventory(): void {
+  setInventoryOpen(false);
+}
+export function toggleInventory(): void {
+  if (inventoryOpen()) closeInventory();
+  else openInventory();
+}
+
+/** Toggle a type filter chip (multi-select; empty set shows all). */
+export function toggleInvType(t: InventoryType): void {
+  setInvTypes((prev) => {
+    const next = new Set(prev);
+    if (next.has(t)) next.delete(t);
+    else next.add(t);
+    return next;
+  });
+}
+export function setInvScopeFilter(s: "all" | "global" | "project"): void {
+  setInvScope(s);
+}
+export function setInvQueryFilter(q: string): void {
+  setInvQuery(q);
+}
+
+/** Items after type + scope + text filters, sorted type→scope→name. */
+export function filteredInventory(): InventoryItem[] {
+  const types = invTypes();
+  const scope = invScope();
+  const q = invQuery().trim().toLowerCase();
+  const order: Record<InventoryType, number> = { skill: 0, subagent: 1, plugin: 2, mcp: 3 };
+  return inventory.items
+    .filter((i) => (types.size === 0 ? true : types.has(i.type)))
+    .filter((i) => (scope === "all" ? true : i.scope === scope))
+    .filter((i) =>
+      q === ""
+        ? true
+        : i.name.toLowerCase().includes(q) ||
+          i.desc.toLowerCase().includes(q) ||
+          (i.detail ?? "").toLowerCase().includes(q),
+    )
+    .slice()
+    .sort(
+      (a, b) =>
+        order[a.type] - order[b.type] ||
+        a.scope.localeCompare(b.scope) ||
+        a.name.localeCompare(b.name),
+    );
+}
+
+/** Per-type counts of the FULL (unfiltered) inventory, for the filter chips. */
+export function inventoryCounts(): Record<InventoryType, number> {
+  const c: Record<InventoryType, number> = { skill: 0, subagent: 0, plugin: 0, mcp: 0 };
+  for (const i of inventory.items) c[i.type]++;
+  return c;
+}

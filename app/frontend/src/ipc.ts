@@ -48,6 +48,23 @@ export interface CockpitState {
   panes: PaneInfo[];
 }
 
+// ── Inventory (P2-F1) ────────────────────────────────────────────────────────
+
+export type InventoryType = "skill" | "subagent" | "plugin" | "mcp";
+
+export interface InventoryItem {
+  id: string;
+  name: string;
+  type: InventoryType;
+  scope: "global" | "project";
+  enabled: boolean;
+  toggleable: boolean;
+  desc: string;
+  detail?: string;
+  path?: string;
+  parseError?: string;
+}
+
 export interface CreateTabResult {
   tabId: string;
   tmuxWindowId: string;
@@ -180,6 +197,18 @@ export function interruptPane(paneId: string): Promise<void> {
 /** Full state snapshot (called on every topology event to reconcile). */
 export function listState(): Promise<CockpitState> {
   return invoke<CockpitState>("list_state");
+}
+
+/**
+ * Read-only unified inventory (P2-F1): skills/subagents/plugins/MCP across the
+ * global `~/.claude` scope plus the per-project `.claude/` scope rooted at
+ * `projectPath` (the active pane's cwd; the backend walks up to the repo root).
+ * Pure config reads — never opens `.env`, never returns MCP env values.
+ */
+export function loadInventory(projectPath?: string): Promise<InventoryItem[]> {
+  return invoke<InventoryItem[]>("load_inventory", {
+    projectPath: projectPath ?? null,
+  });
 }
 
 /**
