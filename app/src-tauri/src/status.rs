@@ -229,6 +229,20 @@ pub fn classify(dead: bool, raw: &str, last_activity_age: Option<u64>) -> Status
     // IDLE prompt/footer.
     let idle = last_line_matching(&tail, |l| is_idle_marker(l));
 
+    // ACTIVE working override. The ✽ spinner glyph (and an explicit "esc to
+    // interrupt") appear ONLY mid-turn — the spinner settles to ✻ when done. CC's
+    // "⏵⏵ auto mode on" footer is PERMANENT and bottom-most, so the position-based
+    // "lowest marker wins" tiebreak below pins IDLE during work; the activity-age
+    // debounce can't rescue it because tmux 3.6b reports empty #{pane_activity}.
+    // So an active signal forces WORKING — unless a NEEDS_INPUT modal is up, which
+    // means claude has paused for the user and is not working.
+    let active_working = tail
+        .iter()
+        .any(|l| has_working_glyph(l) || l.contains("esc to interrupt"));
+    if n == 0 && active_working {
+        return Status::Working;
+    }
+
     // No Claude marker matched. Before giving up to Unknown, check whether the
     // last non-blank line is a settled OS shell prompt — those panes are
     // first-class in the cockpit and should read IDLE, not an alarming `?`.
@@ -321,6 +335,23 @@ mod tests {
     }
 
     #[test]
+    fn active_spinner_beats_persistent_footer() {
+        // Real CC mid-turn on tmux 3.6b (empty pane_activity): the ✽ spinner sits
+        // ABOVE the always-present, bottom-most "auto mode on" footer. The old
+        // position tiebreak picked IDLE here; an active spinner must read WORKING.
+        let snap = "⏺ working...\n✽ Evaporating…\n────\n❯ \n────\n  ⏵⏵ auto mode on (shift+tab to cycle)\n";
+        assert_eq!(classify(false, snap, None), Status::Working);
+    }
+
+    #[test]
+    fn needs_input_beats_active_spinner_override() {
+        // A NEEDS_INPUT modal means claude paused for the user — not working — even
+        // if a stale spinner lingers above. NEEDS_INPUT must still win.
+        let snap = "✽ Working…\n╭ Do you want to proceed?\n❯ 1. Yes\n  2. No\n";
+        assert_eq!(classify(false, snap, None), Status::NeedsInput);
+    }
+
+    #[test]
     fn truly_unknown_stays_unknown() {
         // No Claude markers, no shell sigil on the last non-blank line.
         let snap = "building target/release\ncompiling foo v0.1.0\n";
@@ -354,10 +385,11 @@ mod tests {
 
     #[test]
     fn idle_debounce_holds_working_when_fresh() {
-        // Prompt visible but activity advanced <IDLE_SECS ago AND a working
-        // marker exists higher up -> hold WORKING.
-        let snap = "✽ Running…\n❯ \n⏵⏵ auto mode on (shift+tab to cycle)\n";
-        // Without age it would be IDLE (prompt is lowest); with fresh age -> WORKING.
+        // A TIMER-ONLY working marker (no ✽ spinner, no "esc to interrupt") doesn't
+        // trip the active-working override, so it exercises the position tiebreak +
+        // activity debounce: with the prompt lowest it would be IDLE, but fresh
+        // activity holds WORKING; stale activity settles to IDLE.
+        let snap = "  ◯ agent  building  5s · 1k tokens\n❯ \n⏵⏵ auto mode on (shift+tab to cycle)\n";
         assert_eq!(classify(false, snap, Some(1)), Status::Working);
         assert_eq!(classify(false, snap, Some(10)), Status::Idle);
     }
