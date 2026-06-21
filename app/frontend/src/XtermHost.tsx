@@ -125,11 +125,31 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     });
     ro.observe(hostEl);
 
+    // Re-sync to tmux's authoritative grid after a pane resize (see
+    // store.scheduleResync). xterm's own reflow of a full-screen TUI leaves the
+    // old, wider frame wrapped + scattered in scrollback; tmux holds the pane's
+    // clean grid re-rendered at the new width, so wipe xterm and replay it. This
+    // is the automated form of the Ctrl+L the user would otherwise press. Guard
+    // the hidden case (0×0) and the unmount race.
+    const onResync = () => {
+      if (disposed || hostEl.clientWidth === 0 || hostEl.clientHeight === 0)
+        return;
+      warmStart(paneId)
+        .then((w) => {
+          if (disposed || !w.bytesB64) return;
+          term.reset();
+          term.write(b64ToBytes(w.bytesB64));
+        })
+        .catch(() => {});
+    };
+    window.addEventListener("cockpit:resync", onResync);
+
     // Teardown — critical for HMR (else leaked WebGL contexts) and pane kill.
     onCleanup(() => {
       disposed = true;
       if (resizeTimer) clearTimeout(resizeTimer);
       ro.disconnect();
+      window.removeEventListener("cockpit:resync", onResync);
       dataSub.dispose();
       unlistenData?.();
       term.dispose();

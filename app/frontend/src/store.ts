@@ -215,6 +215,7 @@ export function shutdownCockpit(): void {
 let cellCols = 80;
 let cellRows = 24;
 let gridTimer: number | undefined;
+let resyncTimer: number | undefined;
 let lastGridKey = "";
 
 /** Column count for n panes — MUST mirror PaneGrid.columnsFor. */
@@ -233,7 +234,13 @@ export function reportCell(cols: number, rows: number): void {
 }
 
 async function pushGrid(): Promise<void> {
-  const n = store.panes.length;
+  // Active tab ONLY. The viewport (refresh-client -C) is shared across tmux
+  // windows, and PaneGrid renders just the active tab's panes — so the grid
+  // must mirror activePanes(), not the global pane count. Using store.panes
+  // here counted panes in OTHER tabs too: 2 tabs × 1 pane → n=2 → a 2-col
+  // viewport ~2× the real width, so a single-pane tab's CC laid out for double
+  // width and wrapped/scattered in the half-width xterm.
+  const n = activePanes().length;
   if (n === 0) return;
   const cols = gridColumns(n);
   const rows = Math.ceil(n / cols);
@@ -246,12 +253,38 @@ async function pushGrid(): Promise<void> {
   const layout = rows <= 1 ? "even-horizontal" : "tiled";
   const key = `${winCols}x${winRows}/${n}/${layout}`;
   if (key === lastGridKey) return; // change-guard: no redundant select-layout
-  lastGridKey = key;
   try {
     await setGrid(winCols, winRows, layout);
+    // Record the key ONLY after the push lands. The control client may still be
+    // attaching at first mount, so an early set_grid rejects with "not attached".
+    // If we recorded the key before awaiting (the old bug), the change-guard
+    // above would then block every retry at this same size — the window stayed
+    // stuck at its tmux birth size (200×50) until the user happened to resize.
+    lastGridKey = key;
+    scheduleResync();
   } catch {
-    /* transient; next report retries */
+    // Not attached yet (or transient). No fresh reportCell may follow once the
+    // xterm settles, so self-heal: retry until the client accepts the size.
+    if (gridTimer) clearTimeout(gridTimer);
+    gridTimer = window.setTimeout(() => void pushGrid(), 400);
   }
+}
+
+// After a tmux pane resize, xterm's own reflow of a full-screen TUI is lossy: a
+// frame the app (e.g. `claude`) drew at the OLD width keeps its now-too-wide lines
+// in xterm's buffer, which wrap and scatter at the new width — and the app's live
+// SIGWINCH redraw only repaints the visible viewport, not the polluted scrollback
+// above it (the exact garble Ctrl+L fixes by hand). tmux holds each pane's CLEAN
+// grid re-rendered at the new width, so the cure is to wipe xterm and replay
+// tmux's capture. Panes are born 200 cols (tmux.rs) and settle to the fitted
+// width, so this fires on the birth→fit transition too — fixing a CC launched
+// into a just-born pane as well as any later user window-resize. Broadcast +
+// debounced: every visible XtermHost re-syncs its own pane once the size settles.
+function scheduleResync(): void {
+  if (resyncTimer) clearTimeout(resyncTimer);
+  resyncTimer = window.setTimeout(() => {
+    window.dispatchEvent(new CustomEvent("cockpit:resync"));
+  }, 320);
 }
 
 export function focusPane(paneId: string): void {
