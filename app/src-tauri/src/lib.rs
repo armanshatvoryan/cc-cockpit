@@ -12,8 +12,10 @@
 //! The IPC contract this exposes is documented in the final report; command
 //! names + payloads are stable for the frontend to build against.
 
+pub mod gitstatus;
 pub mod inventory;
 pub mod manager;
+pub mod persist;
 pub mod status;
 pub mod teamruns;
 pub mod templates;
@@ -491,6 +493,9 @@ pub fn run() {
             load_cockpit_templates,
             load_team_runs,
             spinup_preview,
+            persist::save_layout,
+            persist::load_layout,
+            gitstatus::git_status_snapshot,
         ])
         .on_window_event(|window, event| {
             // ⌘W (and the red close button) fire CloseRequested, which would close
