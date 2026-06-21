@@ -11,6 +11,7 @@
 import { createStore, produce, reconcile as reconcileStore } from "solid-js/store";
 import { createSignal, type Accessor } from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import {
   cockpitInit,
   createTab,
@@ -29,6 +30,9 @@ import {
   launchCc,
   launchAgent,
   paneSendKeys,
+  gitStatusSnapshot,
+  saveLayout,
+  loadLayout,
   onPaneStatus,
   onPaneTopology,
   onCockpitReconnected,
@@ -43,6 +47,9 @@ import {
   type Roster,
   type Workflow,
   type SpinupPreview,
+  type GitStatus,
+  type LayoutSnapshot,
+  type TabLayout,
 } from "./ipc";
 
 interface CockpitStore extends CockpitState {
@@ -68,7 +75,11 @@ const [focusedPaneId, setFocusedPaneId] = createSignal<string | null>(null);
 // Local-only tab display-name overrides (v1 rename is client-side only).
 const [tabNameOverrides, setTabNameOverrides] = createStore<Record<string, string>>({});
 
-export { store, activeTabId, focusedPaneId };
+// dev#2 — per-tab git status of its first-pane cwd. `null` = cwd isn't a repo;
+// absent key = not yet polled. Only the ACTIVE tab is refreshed (cheap).
+const [gitStatus, setGitStatus] = createStore<Record<string, GitStatus | null>>({});
+
+export { store, activeTabId, focusedPaneId, gitStatus };
 
 // ── Selectors ─────────────────────────────────────────────────────────────────
 
@@ -142,6 +153,99 @@ export async function refreshState(): Promise<void> {
   }
 }
 
+// ── C2: OS attention (dock bounce + badge) ──────────────────────────────────
+// When a pane needs input while the cockpit is in the background, bounce the
+// dock and badge the window with the count. Cleared the moment the window
+// regains focus. Best-effort: every call swallows its own rejection so a missing
+// permission / platform quirk never escalates into a store error.
+
+/** Number of panes currently waiting on the user. */
+function needsInputCount(): number {
+  return store.panes.filter((p) => p.status === "NEEDS_INPUT").length;
+}
+
+/** Bounce + badge when backgrounded and something needs input. */
+function signalAttention(): void {
+  const count = needsInputCount();
+  if (count <= 0 || document.hasFocus()) return;
+  const win = getCurrentWindow();
+  void win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
+  void win.setBadgeCount(count).catch(() => {});
+}
+
+/** Drop the bounce + clear the badge (on window focus). `undefined` ⇒ None ⇒
+ *  clears the badge — the type excludes `null` and `0` would render a "0" badge. */
+function clearAttention(): void {
+  const win = getCurrentWindow();
+  void win.requestUserAttention(null).catch(() => {});
+  void win.setBadgeCount(undefined).catch(() => {});
+}
+
+// ── dev#1: disk-persisted layout ────────────────────────────────────────────
+// Mirror the open tabs (position + first-pane cwd + local rename) + the active
+// tab to disk, debounced. On boot we replay saved renames onto the live tabs
+// matched by (index, cwd). Best-effort throughout — a write/read failure logs
+// and is dropped; it must never block a UI action or boot.
+
+/** Build the snapshot from current store state. */
+function buildLayoutSnapshot(): LayoutSnapshot {
+  const tabs: TabLayout[] = store.tabs.map((t) => {
+    const cwd = store.panes.find((p) => p.paneId === t.paneIds[0])?.cwd ?? "";
+    return { index: t.index, cwd, customTitle: tabNameOverrides[t.tabId] ?? null };
+  });
+  return { schemaVersion: 1, activeTabId: activeTabId(), tabs };
+}
+
+let persistTimer: number | undefined;
+/** Debounced persist (~300ms) so a burst of tab ops coalesces into one write. */
+function persistLayout(): void {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(() => {
+    void saveLayout(buildLayoutSnapshot()).catch((e) =>
+      console.warn("save_layout failed", e),
+    );
+  }, 300);
+}
+
+/** Replay persisted renames + active tab onto the freshly reconciled state. */
+async function restoreLayout(): Promise<void> {
+  try {
+    const saved = await loadLayout();
+    if (!saved) return;
+    for (const tl of saved.tabs) {
+      if (!tl.customTitle) continue;
+      const liveTab = store.tabs.find(
+        (t) =>
+          t.index === tl.index &&
+          store.panes.find((p) => p.paneId === t.paneIds[0])?.cwd === tl.cwd,
+      );
+      if (liveTab) renameTabLocal(liveTab.tabId, tl.customTitle);
+    }
+    if (saved.activeTabId && store.tabs.some((t) => t.tabId === saved.activeTabId)) {
+      setActiveTabId(saved.activeTabId);
+    }
+  } catch (e) {
+    console.warn("load_layout/restore failed", e);
+  }
+}
+
+// ── dev#2: per-worktree git status ──────────────────────────────────────────
+// Poll only the ACTIVE tab's first-pane cwd (a switch + an 8s interval). Cheap:
+// one `git status` per cycle, never an all-tabs hammer.
+
+/** Refresh the active tab's git badge from its first-pane cwd. */
+async function refreshActiveGitStatus(): Promise<void> {
+  const tab = activeTab();
+  if (!tab) return;
+  const cwd = store.panes.find((p) => p.paneId === tab.paneIds[0])?.cwd;
+  if (!cwd) return;
+  try {
+    setGitStatus(tab.tabId, await gitStatusSnapshot(cwd));
+  } catch {
+    /* git missing / transient — keep the last known badge */
+  }
+}
+
 // ── Boot ────────────────────────────────────────────────────────────────────
 
 let unlisteners: UnlistenFn[] = [];
@@ -159,6 +263,11 @@ export async function bootCockpit(): Promise<void> {
   reconcile(state);
   setStore("ready", true);
 
+  // dev#1 — best-effort replay of persisted renames + active tab. Never throws.
+  await restoreLayout();
+  // dev#2 — paint the active tab's git badge immediately, then poll it.
+  void refreshActiveGitStatus();
+
   // pane:status — patch the matching pane's status badge in place.
   const unStatus = await onPaneStatus((p) => {
     setStore(
@@ -170,6 +279,9 @@ export async function bootCockpit(): Promise<void> {
         if (p.status === "DEAD") pane.dead = true;
       }),
     );
+    // C2 — after the patch (setStore is sync), bounce + badge if we're in the
+    // background and any pane now needs input.
+    signalAttention();
   });
 
   // pane:topology — any structural change → full reconcile.
@@ -192,7 +304,16 @@ export async function bootCockpit(): Promise<void> {
   // (or the active tab if it's the last pane) instead of the whole window.
   const unCloseReq = await onCloseRequested(() => void closeFocusedPaneOrTab());
 
-  unlisteners = [unStatus, unTopo, unReconnect, unCloseReq];
+  // C2 — clear the dock bounce + badge the moment the cockpit regains focus.
+  const onWinFocus = () => clearAttention();
+  window.addEventListener("focus", onWinFocus);
+  const unFocus: UnlistenFn = () => window.removeEventListener("focus", onWinFocus);
+
+  // dev#2 — refresh the active tab's git badge every 8s (active tab only).
+  const gitInterval = window.setInterval(() => void refreshActiveGitStatus(), 8000);
+  const unGit: UnlistenFn = () => clearInterval(gitInterval);
+
+  unlisteners = [unStatus, unTopo, unReconnect, unCloseReq, unFocus, unGit];
 }
 
 /** Tear down event subscriptions (window close / HMR). */
@@ -296,6 +417,8 @@ export function switchTab(tabId: string): void {
   // Move focus into the newly active tab's first pane.
   const tab = store.tabs.find((t) => t.tabId === tabId);
   setFocusedPaneId(tab?.paneIds[0] ?? null);
+  void refreshActiveGitStatus(); // dev#2 — repaint badge for the new active tab
+  persistLayout(); // dev#1 — active tab changed
 }
 
 /** Switch to the Nth tab (0-based) if it exists — for Cmd+1..9. */
@@ -311,6 +434,8 @@ export async function newTab(name?: string): Promise<void> {
     await refreshState();
     setActiveTabId(res.tabId);
     setFocusedPaneId(res.paneId);
+    void refreshActiveGitStatus(); // dev#2 — badge the freshly created tab
+    persistLayout(); // dev#1
   } catch (e) {
     setStore("error", `create_tab failed: ${String(e)}`);
   }
@@ -330,6 +455,8 @@ export async function requestCloseTab(
       return { needsConfirm: true, livePanes: res.livePanes };
     }
     await refreshState();
+    persistLayout(); // dev#1 — tab set changed (stale gitStatus keys are never
+    // read: chips only render for live tabs, so no cleanup needed)
     return { needsConfirm: false, livePanes: [] };
   } catch (e) {
     setStore("error", `close_tab failed: ${String(e)}`);
@@ -379,6 +506,7 @@ export async function closeFocusedPaneOrTab(): Promise<void> {
 
 export function renameTabLocal(tabId: string, name: string): void {
   setTabNameOverrides(tabId, name);
+  persistLayout(); // dev#1 — local rename is part of the persisted layout
 }
 
 export function clearError(): void {

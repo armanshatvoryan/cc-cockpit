@@ -203,6 +203,33 @@ export interface WarmStartPayload {
   bytesB64: string;
 }
 
+// ── Terax tier-1 (git status + disk-persisted layout) ────────────────────────
+// Mirrors `gitstatus.rs` / `persist.rs` DTOs (camelCase serde). See the backend
+// contract: `git_status_snapshot(cwd)`, `save_layout(snapshot)`, `load_layout()`.
+
+export interface GitStatus {
+  branch: string;
+  ahead: number;
+  behind: number;
+  dirty: boolean;
+  changed: number;
+  untracked: number;
+}
+
+/** One persisted tab: position + first-pane cwd + optional local rename. */
+export interface TabLayout {
+  index: number;
+  cwd: string;
+  customTitle?: string | null;
+}
+
+/** The whole disk-persisted cockpit layout (`<app_config_dir>/cockpit/layout.json`). */
+export interface LayoutSnapshot {
+  schemaVersion: number;
+  activeTabId?: string | null;
+  tabs: TabLayout[];
+}
+
 // ── Event payloads ──────────────────────────────────────────────────────────
 
 export interface PaneDataPayload {
@@ -410,6 +437,24 @@ export function spinupPreview(
  */
 export function warmStart(paneId: string): Promise<WarmStartPayload> {
   return invoke<WarmStartPayload>("warm_start", { paneId });
+}
+
+/**
+ * Per-worktree git status for a cwd (dev#2). Resolves to `null` when `cwd` is not
+ * a git repo (the backend returns `Ok(None)`); rejects only if `git` is missing.
+ */
+export function gitStatusSnapshot(cwd: string): Promise<GitStatus | null> {
+  return invoke<GitStatus | null>("git_status_snapshot", { cwd });
+}
+
+/** Persist the cockpit layout atomically (dev#1). Backend forces schemaVersion=1. */
+export function saveLayout(snapshot: LayoutSnapshot): Promise<void> {
+  return invoke<void>("save_layout", { snapshot });
+}
+
+/** Load the persisted layout, or `null` on first run / absent file (dev#1). */
+export function loadLayout(): Promise<LayoutSnapshot | null> {
+  return invoke<LayoutSnapshot | null>("load_layout");
 }
 
 // ── Events (Rust -> FE) ───────────────────────────────────────────────────────

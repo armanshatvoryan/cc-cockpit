@@ -160,6 +160,43 @@ button {
   outline: none;
 }
 
+/* ── Git badge (dev#2) — branch + dirty dot + ahead/behind on a tab chip ─── */
+.git-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  max-width: 130px;
+  padding: 0 5px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-1);
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1;
+}
+.tab-chip.active .git-badge {
+  border-color: var(--border-strong);
+}
+.git-branch {
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-dirty {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: #f59e0b; /* amber = uncommitted changes */
+}
+.git-ab {
+  color: var(--fg-faint);
+}
+
 .tab-close {
   display: flex;
   align-items: center;

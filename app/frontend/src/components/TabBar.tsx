@@ -18,6 +18,7 @@ import {
   renameTabLocal,
   tabDisplayName,
   tabAttention,
+  gitStatus,
 } from "../store";
 
 const TabChip: Component<{ tab: TabInfo }> = (props) => {
@@ -27,6 +28,8 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
 
   const active = () => activeTabId() === props.tab.tabId;
   const attention = () => tabAttention(props.tab);
+  // dev#2 — git status of this tab's first-pane cwd (null/absent ⇒ no badge).
+  const git = () => gitStatus[props.tab.tabId];
 
   function startRename() {
     setDraft(tabDisplayName(props.tab));
@@ -83,6 +86,27 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
           }
         >
           <span class="tab-name">{tabDisplayName(props.tab)}</span>
+        </Show>
+        <Show when={git()}>
+          {(g) => (
+            <span
+              class="git-badge"
+              title={`${g().branch} · ${g().changed} changed · ${g().untracked} untracked${
+                g().ahead ? ` · ↑${g().ahead}` : ""
+              }${g().behind ? ` · ↓${g().behind}` : ""}`}
+            >
+              <span class="git-branch">{g().branch}</span>
+              <Show when={g().dirty}>
+                <span class="git-dirty" />
+              </Show>
+              <Show when={g().ahead > 0}>
+                <span class="git-ab">↑{g().ahead}</span>
+              </Show>
+              <Show when={g().behind > 0}>
+                <span class="git-ab">↓{g().behind}</span>
+              </Show>
+            </span>
+          )}
         </Show>
         <button class="tab-close" title="Close tab" onClick={onCloseClick}>
           ×
