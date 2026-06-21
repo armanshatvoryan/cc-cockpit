@@ -1,0 +1,37 @@
+# ── OS / editor noise ──
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# ── Local scratch (never commit) ──
+.flow-check/
+tmp/
+.tmp/
+
+# ── Secrets ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Rust / Cargo (Cargo.lock is committed for the app — do NOT ignore) ──
+**/target/
+
+# ── Node / Vite ──
+**/node_modules/
+**/dist/
+**/.vite/
+npm-debug.log*
+yarn-error.log
+*.tsbuildinfo
+
+# ── Python (skill/render tooling) ──
+__pycache__/
+*.pyc
+.venv/
+
+# ── Temp render artifacts ──
+_p*.png
