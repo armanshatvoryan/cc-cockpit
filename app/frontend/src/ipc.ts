@@ -291,11 +291,12 @@ export function createTab(name?: string): Promise<CreateTabResult> {
 }
 
 /**
- * Inspect/close a tab. If `force` is false and the result has `ok:false` with
- * non-empty `livePanes`, confirm with the user then re-call with `force:true`.
+ * Inspect/close a tab by its STABLE tmux window id (`@n`), never the mutable
+ * window index. If `force` is false and the result has `ok:false` with non-empty
+ * `livePanes`, confirm with the user then re-call with `force:true`.
  */
-export function closeTab(tabId: string, force: boolean): Promise<CloseTabResult> {
-  return invoke<CloseTabResult>("close_tab", { tabId, force });
+export function closeTab(windowId: string, force: boolean): Promise<CloseTabResult> {
+  return invoke<CloseTabResult>("close_tab", { windowId, force });
 }
 
 /** Split a pane horizontally ('h', side-by-side) or vertically ('v', stacked). */

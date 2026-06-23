@@ -148,17 +148,30 @@ fn create_tab(
     state: State<'_, AppState>,
     name: Option<String>,
 ) -> Result<CreateTabResult, String> {
-    with_reconnect(&app, &state, |mgr| mgr.create_tab(name.as_deref()))
+    // `create_tab_healing` adds a window when the session is alive, but when the
+    // session was destroyed (user closed the last tab) it re-creates + re-attaches
+    // and ADOPTS the lone bootstrap window — so one ⌘T from the empty state yields
+    // exactly one tab, not two. A re-attach returns a fresh Outbound stream; rebind
+    // the forwarder + notify the UI, same as `with_reconnect`.
+    let (tab, new_rx) = {
+        let mut mgr = state.mgr.lock().unwrap();
+        mgr.create_tab_healing(name.as_deref())?
+    };
+    if let Some(rx) = new_rx {
+        spawn_forwarder(app.clone(), rx);
+        let _ = app.emit("cockpit:reconnected", ());
+    }
+    Ok(tab)
 }
 
 #[tauri::command]
 fn close_tab(
     app: AppHandle,
     state: State<'_, AppState>,
-    tab_id: String,
+    window_id: String,
     force: bool,
 ) -> Result<CloseTabResult, String> {
-    with_reconnect(&app, &state, |mgr| mgr.close_tab(&tab_id, force))
+    with_reconnect(&app, &state, |mgr| mgr.close_tab(&window_id, force))
 }
 
 #[tauri::command]

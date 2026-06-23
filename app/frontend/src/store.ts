@@ -471,8 +471,17 @@ export async function requestCloseTab(
   tabId: string,
   force = false,
 ): Promise<{ needsConfirm: boolean; livePanes: string[] }> {
+  // Resolve to the STABLE tmux window id. tab_id encodes the mutable window
+  // index, which tmux reuses for new windows — closing by index can hit the
+  // wrong window or a gone one. If the tab already reconciled away (its window
+  // closed under us), there's nothing to kill; just resync.
+  const tab = store.tabs.find((t) => t.tabId === tabId);
+  if (!tab) {
+    await refreshState();
+    return { needsConfirm: false, livePanes: [] };
+  }
   try {
-    const res = await closeTab(tabId, force);
+    const res = await closeTab(tab.tmuxWindowId, force);
     if (!res.ok && res.livePanes.length > 0) {
       return { needsConfirm: true, livePanes: res.livePanes };
     }

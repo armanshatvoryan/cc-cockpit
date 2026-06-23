@@ -124,6 +124,12 @@ export function installKeyboard(): void {
       return;
     }
 
+    // Ignore OS key-autorepeat for the discrete create/split/toggle actions
+    // below: holding ⌘T a hair too long fires multiple `keydown`s (e.repeat),
+    // each of which would spawn a tab — the "one press → two tabs" bug. (Zoom
+    // ⌘+/⌘- above is left repeatable on hold, so it stays before this guard.)
+    if (e.repeat) return;
+
     const k = e.key.toLowerCase();
 
     // ⌘T — new tab.  ⌘⇧T — toggle the live team board.
