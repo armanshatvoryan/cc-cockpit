@@ -29,7 +29,16 @@ import {
   pluginTogglePreview,
   launchCc,
   launchAgent,
+  launchShell,
   paneSendKeys,
+  listDir,
+  paneCwd,
+  paneCommand,
+  revealInFinder,
+  createEntry,
+  trashPath,
+  watchDirs,
+  breakPane,
   gitStatusSnapshot,
   saveLayout,
   loadLayout,
@@ -37,6 +46,7 @@ import {
   onPaneTopology,
   onCockpitReconnected,
   onCloseRequested,
+  onFileTreeChanged,
   type CockpitState,
   type PaneInfo,
   type TabInfo,
@@ -50,6 +60,7 @@ import {
   type GitStatus,
   type LayoutSnapshot,
   type TabLayout,
+  type FileEntry,
 } from "./ipc";
 
 interface CockpitStore extends CockpitState {
@@ -313,7 +324,16 @@ export async function bootCockpit(): Promise<void> {
   const gitInterval = window.setInterval(() => void refreshActiveGitStatus(), 8000);
   const unGit: UnlistenFn = () => clearInterval(gitInterval);
 
-  unlisteners = [unStatus, unTopo, unReconnect, unCloseReq, unFocus, unGit];
+  // v1.1 — root the file-tree on the active pane now, then follow it (a shell cd
+  // emits no topology event, so poll the focused pane's cwd every 1.5s).
+  void syncFileTreeRoot();
+  const ftInterval = window.setInterval(() => void syncFileTreeRoot(), 1500);
+  const unFt: UnlistenFn = () => clearInterval(ftInterval);
+
+  // v1.1 — live fs-watch: reload a visible dir when the backend reports it changed.
+  const unFtChange = await onFileTreeChanged((p) => ftOnChanged(p.dir));
+
+  unlisteners = [unStatus, unTopo, unReconnect, unCloseReq, unFocus, unGit, unFt, unFtChange];
 }
 
 /** Tear down event subscriptions (window close / HMR). */
@@ -410,6 +430,7 @@ function scheduleResync(): void {
 
 export function focusPane(paneId: string): void {
   setFocusedPaneId(paneId);
+  void syncFileTreeRoot(); // v1.1 — tree follows the newly focused pane's cwd
 }
 
 export function switchTab(tabId: string): void {
@@ -418,6 +439,7 @@ export function switchTab(tabId: string): void {
   const tab = store.tabs.find((t) => t.tabId === tabId);
   setFocusedPaneId(tab?.paneIds[0] ?? null);
   void refreshActiveGitStatus(); // dev#2 — repaint badge for the new active tab
+  void syncFileTreeRoot(); // v1.1 — tree follows the new active tab's cwd
   persistLayout(); // dev#1 — active tab changed
 }
 
@@ -963,5 +985,351 @@ export async function confirmToggle(): Promise<void> {
     setStore("error", `plugin toggle failed: ${String(e)}`);
   } finally {
     setTogglingId(null);
+  }
+}
+
+// ── File-tree sidebar (v1.1) ──────────────────────────────────────────────────
+//
+// A DOCKED left sidebar (⌘B), not an overlay — a navigation + path helper for the
+// terminals/agents, NOT an editor. The tree FOLLOWS the active pane's cwd: we
+// PROBE the focused pane's `pane_current_path` on a poll, because a shell `cd`
+// fires no topology event so the reconciled `PaneInfo.cwd` goes stale. Lazy —
+// one `list_dir` per opened folder, cached in `entries` (keyed by abs path).
+
+interface FileTreeStore {
+  /** Current root = the active pane's cwd. */
+  root: string;
+  /** dir path → its immediate children (load cache). */
+  entries: Record<string, FileEntry[]>;
+  /** dir path → mid-load (for a spinner; avoids double-fetch). */
+  loading: Record<string, boolean>;
+  error: string | null;
+}
+const [fileTree, setFileTree] = createStore<FileTreeStore>({
+  root: "",
+  entries: {},
+  loading: {},
+  error: null,
+});
+/** Sidebar shown? Docked + default on; ⌘B toggles. */
+const [sidebarVisible, setSidebarVisible] = createSignal(true);
+/** Which folders are expanded (keyed by abs path). */
+const [ftExpanded, setFtExpanded] = createStore<Record<string, boolean>>({});
+/** Show dotfiles? (⚙ toggle). `.gitignore` filtering is independent + always on. */
+const [ftShowHidden, setFtShowHidden] = createSignal(false);
+export { fileTree, sidebarVisible, ftExpanded, ftShowHidden };
+
+/** Children of the current root (the top level the tree renders). */
+export function ftRootEntries(): FileEntry[] {
+  return fileTree.entries[fileTree.root] ?? [];
+}
+
+/** Load (or reload) one directory's children into the cache. Never throws — a
+ *  permission error surfaces as the panel error, not a blank tree. */
+export async function ftLoadDir(path: string): Promise<void> {
+  if (!path) return;
+  setFileTree("loading", path, true);
+  try {
+    const entries = await listDir(path, ftShowHidden());
+    setFileTree("entries", path, entries);
+    setFileTree("error", null);
+  } catch (e) {
+    setFileTree("error", String(e));
+  } finally {
+    setFileTree("loading", path, false);
+  }
+}
+
+/** Expand/collapse a folder; lazy-load its children on first expand. */
+export function ftToggleExpand(path: string): void {
+  const open = !!ftExpanded[path];
+  setFtExpanded(path, !open);
+  if (!open && !fileTree.entries[path]) void ftLoadDir(path);
+  ftSyncWatched(); // visible set changed → update the watcher
+}
+
+/** Re-root the tree (the active pane's cwd changed). Always reloads the new root
+ *  fresh; expansion state is kept (keyed by abs path, so it's harmless). */
+export function ftSetRoot(path: string): void {
+  if (!path || path === fileTree.root) return;
+  setFileTree("root", path);
+  void ftLoadDir(path);
+  ftSyncWatched(); // root changed → re-watch
+}
+
+/** ⌘B — show/hide the docked sidebar. Re-syncs the root + watcher when toggled. */
+export function toggleSidebar(): void {
+  setSidebarVisible((v) => !v);
+  if (sidebarVisible()) void syncFileTreeRoot();
+  ftSyncWatched(); // watch the visible set, or clear it when hidden
+}
+
+/** Flip show-dotfiles and re-list every cached dir so the filter re-applies. */
+export function ftToggleHidden(): void {
+  setFtShowHidden((v) => !v);
+  for (const dir of Object.keys(fileTree.entries)) void ftLoadDir(dir);
+}
+
+/** Manual ⟳: reload the root + every currently-expanded dir from disk. */
+export function ftRefresh(): void {
+  void ftLoadDir(fileTree.root);
+  for (const [path, open] of Object.entries(ftExpanded)) {
+    if (open) void ftLoadDir(path);
+  }
+}
+
+/** Probe the focused pane's live cwd and re-root the tree there if it moved.
+ *  The tree follows the active pane; shell `cd`s don't emit topology, so this
+ *  runs on a poll + on focus/tab change. Cheap (one `display-message`). */
+export async function syncFileTreeRoot(): Promise<void> {
+  if (!sidebarVisible()) return; // don't probe a hidden sidebar
+  const pid = focusedPaneId();
+  let cwd: string | undefined;
+  if (pid) {
+    try {
+      cwd = await paneCwd(pid);
+    } catch {
+      cwd = undefined; // dead/odd pane — fall back below
+    }
+  }
+  if (!cwd) cwd = focusedPane()?.cwd || store.panes[0]?.cwd;
+  if (cwd && cwd !== fileTree.root) ftSetRoot(cwd);
+}
+
+// ── File-tree actions (v1.1 Phase C) ──────────────────────────────────────────
+// All actions DRIVE the terminals/agents — there is no editor. Path inserts use
+// `paneSendKeys` (same channel as typing); creates/trash hit the validated
+// backend; "open in terminal" reuses the tab/shell launch plumbing.
+
+/** Path of `abs` relative to `base` (else `abs` if it isn't under `base`). */
+function relativeTo(base: string, abs: string): string {
+  if (!base) return abs;
+  if (abs === base) return ".";
+  const b = base.endsWith("/") ? base : base + "/";
+  return abs.startsWith(b) ? abs.slice(b.length) : abs;
+}
+
+function parentDir(p: string): string {
+  const t = p.replace(/\/+$/, "");
+  const i = t.lastIndexOf("/");
+  return i <= 0 ? "/" : t.slice(0, i);
+}
+
+function baseName(p: string): string {
+  const parts = p.replace(/\/+$/, "").split("/");
+  return parts[parts.length - 1] || p;
+}
+
+/** Shell-quote a path that has anything beyond a safe charset (defense at the
+ *  send boundary — a path with spaces/specials must reach the shell intact). */
+function shellQuoteIfNeeded(s: string): string {
+  return /[^A-Za-z0-9._/-]/.test(s) ? `'${s.replace(/'/g, `'\\''`)}'` : s;
+}
+
+/** Insert a path into a pane, formatted for the pane's kind: a claude pane gets
+ *  an `@<relpath>` mention, a shell gets a (shell-quoted) raw relpath. Relative
+ *  to the pane's own cwd; NO trailing Enter (you prefix a command / edit first). */
+async function insertPathInto(paneId: string, absPath: string): Promise<void> {
+  let base = fileTree.root;
+  try {
+    base = await paneCwd(paneId);
+  } catch {
+    /* keep tree root as the relativity base */
+  }
+  const rel = relativeTo(base, absPath);
+  let isClaude = false;
+  try {
+    isClaude = (await paneCommand(paneId)).toLowerCase().includes("claude");
+  } catch {
+    /* default to shell formatting */
+  }
+  paneSendKeys(paneId, isClaude ? `@${rel}` : shellQuoteIfNeeded(rel));
+}
+
+/** Double-click a file → insert its path into the ACTIVE pane (D1/D5). */
+export async function ftInsertIntoActivePane(entry: FileEntry): Promise<void> {
+  if (entry.isDir) return;
+  const pid = focusedPaneId();
+  if (pid) await insertPathInto(pid, entry.path);
+}
+
+/** Right-click "Open in Terminal": a NEW tab with a shell cd'd into the folder
+ *  (a file → its parent dir). */
+export async function ftOpenInTerminal(entry: FileEntry): Promise<void> {
+  const dir = entry.isDir ? entry.path : parentDir(entry.path);
+  try {
+    const res = await createTab(baseName(dir));
+    await refreshState();
+    setActiveTabId(res.tabId);
+    setFocusedPaneId(res.paneId);
+    await launchShell(res.paneId, dir);
+  } catch (e) {
+    setStore("error", `open in terminal failed: ${String(e)}`);
+  }
+}
+
+export async function ftRevealInFinder(path: string): Promise<void> {
+  try {
+    await revealInFinder(path);
+  } catch (e) {
+    setStore("error", `reveal failed: ${String(e)}`);
+  }
+}
+
+async function copyText(t: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(t);
+  } catch {
+    setStore("error", "clipboard write failed");
+  }
+}
+/** Copy Path = absolute. */
+export function ftCopyPath(path: string): void {
+  void copyText(path);
+}
+/** Copy Relative Path = relative to the tree root (the active cwd). */
+export function ftCopyRelPath(path: string): void {
+  void copyText(relativeTo(fileTree.root, path));
+}
+
+// ── Inline New File / New Folder ──────────────────────────────────────────────
+interface FtNewEntry {
+  parent: string;
+  isDir: boolean;
+}
+const [ftNewEntry, setFtNewEntry] = createSignal<FtNewEntry | null>(null);
+export { ftNewEntry };
+
+/** Begin an inline new file/folder under `parent` (default = the root). */
+export function ftBeginNew(isDir: boolean, parent?: string): void {
+  const dir = parent ?? fileTree.root;
+  if (parent && !ftExpanded[parent]) {
+    setFtExpanded(parent, true);
+    if (!fileTree.entries[parent]) void ftLoadDir(parent);
+  }
+  setFtNewEntry({ parent: dir, isDir });
+}
+export function ftCancelNew(): void {
+  setFtNewEntry(null);
+}
+/** Commit the inline new entry (Enter): create on disk + reload the parent. */
+export async function ftCommitNew(name: string): Promise<void> {
+  const ne = ftNewEntry();
+  setFtNewEntry(null);
+  if (!ne) return;
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  try {
+    await createEntry(ne.parent, trimmed, ne.isDir);
+    await ftLoadDir(ne.parent); // surface the new entry
+  } catch (e) {
+    setStore("error", `create failed: ${String(e)}`);
+  }
+}
+
+// ── Delete (confirm → Trash) ──────────────────────────────────────────────────
+const [ftPendingDelete, setFtPendingDelete] = createSignal<FileEntry | null>(null);
+export { ftPendingDelete };
+export function ftRequestDelete(entry: FileEntry): void {
+  setFtPendingDelete(entry);
+}
+export function ftCancelDelete(): void {
+  setFtPendingDelete(null);
+}
+/** Confirm: move to Trash (recoverable) + reload the parent dir. */
+export async function ftConfirmDelete(): Promise<void> {
+  const e = ftPendingDelete();
+  setFtPendingDelete(null);
+  if (!e) return;
+  try {
+    await trashPath(e.path);
+    await ftLoadDir(parentDir(e.path));
+  } catch (err) {
+    setStore("error", `delete failed: ${String(err)}`);
+  }
+}
+
+// ── Attach to Agent ───────────────────────────────────────────────────────────
+/** Live agent panes for the Attach-to-Agent submenu: team-board members whose
+ *  `%N` pane this cockpit currently tracks (deduped). */
+export function ftLiveAgents(): { paneId: string; label: string }[] {
+  const seen = new Set<string>();
+  const out: { paneId: string; label: string }[] = [];
+  for (const run of teamBoard.runs) {
+    for (const m of run.members) {
+      if (m.tmuxPaneId && memberPaneIsLive(m.tmuxPaneId) && !seen.has(m.tmuxPaneId)) {
+        seen.add(m.tmuxPaneId);
+        out.push({ paneId: m.tmuxPaneId, label: `${m.name || m.agentId} ${m.tmuxPaneId}` });
+      }
+    }
+  }
+  return out;
+}
+/** Attach a file to a chosen agent: insert its path into that agent's pane.
+ *  (insertPathInto detects the claude pane → `@path` mention.) */
+export async function ftAttachToAgent(entry: FileEntry, paneId: string): Promise<void> {
+  await insertPathInto(paneId, entry.path);
+}
+
+// ── Context menu (right-click) ────────────────────────────────────────────────
+interface FtMenu {
+  entry: FileEntry;
+  x: number;
+  y: number;
+}
+const [ftMenu, setFtMenu] = createSignal<FtMenu | null>(null);
+export { ftMenu };
+/** Open the right-click menu at (x,y); refresh live team runs so the
+ *  Attach-to-Agent submenu is populated. */
+export function ftOpenMenu(entry: FileEntry, x: number, y: number): void {
+  setFtMenu({ entry, x, y });
+  void loadTeamRunsNow();
+}
+export function ftCloseMenu(): void {
+  setFtMenu(null);
+}
+
+// ── Live fs-watch (Phase D) ───────────────────────────────────────────────────
+// The visible dirs (root + expanded) are watched non-recursively. On a change the
+// backend emits `filetree:changed { dir }`; we debounce-reload that one dir.
+
+/** The dirs currently visible (root + expanded folders) — the watch set. */
+function ftWatchedDirs(): string[] {
+  const dirs = new Set<string>();
+  if (fileTree.root) dirs.add(fileTree.root);
+  for (const [p, open] of Object.entries(ftExpanded)) if (open) dirs.add(p);
+  return [...dirs];
+}
+
+/** Push the current visible set to the backend watcher (or clear it when the
+ *  sidebar is hidden). Cheap diff server-side; safe to call on every change. */
+export function ftSyncWatched(): void {
+  void watchDirs(sidebarVisible() ? ftWatchedDirs() : []);
+}
+
+// One debounce timer per changed dir (agents write bursts; coalesce reloads).
+const ftReloadTimers: Record<string, number> = {};
+/** A watched dir changed → reload it (debounced) if it's currently shown. */
+function ftOnChanged(dir: string): void {
+  if (dir !== fileTree.root && !(dir in fileTree.entries)) return; // not visible
+  if (ftReloadTimers[dir]) clearTimeout(ftReloadTimers[dir]);
+  ftReloadTimers[dir] = window.setTimeout(() => void ftLoadDir(dir), 150);
+}
+export { ftOnChanged };
+
+// ── Send pane → new tab (Phase E) ─────────────────────────────────────────────
+/** Break a pane out into its own new tab (kept running) + switch to it. The
+ *  caller (pane chrome) only offers this when the tab has >1 pane. */
+export async function sendPaneToNewTab(paneId: string): Promise<void> {
+  try {
+    const windowId = await breakPane(paneId);
+    await refreshState();
+    const tab = store.tabs.find((t) => t.tmuxWindowId === windowId);
+    if (tab) {
+      setActiveTabId(tab.tabId);
+      setFocusedPaneId(paneId);
+    }
+  } catch (e) {
+    setStore("error", `send to new tab failed: ${String(e)}`);
   }
 }

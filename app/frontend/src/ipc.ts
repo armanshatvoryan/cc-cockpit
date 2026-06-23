@@ -230,6 +230,19 @@ export interface LayoutSnapshot {
   tabs: TabLayout[];
 }
 
+// ── File-tree sidebar (v1.1) ─────────────────────────────────────────────────
+// Mirrors `filetree.rs` (camelCase serde). The docked sidebar is a navigation +
+// path helper for the terminals/agents — NOT an editor.
+
+export interface FileEntry {
+  /** Basename shown in the tree. */
+  name: string;
+  /** Absolute path (what click-actions insert / cd into). */
+  path: string;
+  /** Directory? Sorts first; expandable. */
+  isDir: boolean;
+}
+
 // ── Event payloads ──────────────────────────────────────────────────────────
 
 export interface PaneDataPayload {
@@ -258,6 +271,11 @@ export interface PaneStatusPayload {
   status: PaneStatus;
   ambiguous: boolean;
   recencyMs: number;
+}
+
+/** A directory whose contents changed (file-tree live watch). */
+export interface FileChangePayload {
+  dir: string;
 }
 
 // ── Commands (FE -> Rust) ────────────────────────────────────────────────────
@@ -440,6 +458,16 @@ export function warmStart(paneId: string): Promise<WarmStartPayload> {
 }
 
 /**
+ * Visible-screen-only replay for the post-resize re-sync (no scrollback). A shell
+ * redraws its prompt on each resize and leaves the old one in scrollback;
+ * replaying full history surfaces that garble. The visible grid is clean (what
+ * Ctrl+L shows), so the re-sync replays just that.
+ */
+export function warmStartScreen(paneId: string): Promise<WarmStartPayload> {
+  return invoke<WarmStartPayload>("warm_start_screen", { paneId });
+}
+
+/**
  * Per-worktree git status for a cwd (dev#2). Resolves to `null` when `cwd` is not
  * a git repo (the backend returns `Ok(None)`); rejects only if `git` is missing.
  */
@@ -455,6 +483,60 @@ export function saveLayout(snapshot: LayoutSnapshot): Promise<void> {
 /** Load the persisted layout, or `null` on first run / absent file (dev#1). */
 export function loadLayout(): Promise<LayoutSnapshot | null> {
   return invoke<LayoutSnapshot | null>("load_layout");
+}
+
+/**
+ * File-tree sidebar (v1.1): the immediate children of one directory (lazy — one
+ * call per opened folder). `.gitignore` is always honored and dotfiles are hidden
+ * unless `showHidden`, so node_modules/target/.git never reach the tree. Sorted
+ * dirs-first, then case-insensitively.
+ */
+export function listDir(path: string, showHidden: boolean): Promise<FileEntry[]> {
+  return invoke<FileEntry[]>("list_dir", { path, showHidden });
+}
+
+/**
+ * Resolve a tmux pane's cwd. The tree roots on the active pane and follows it —
+ * a shell pane tracks live `cd`, a claude pane reports its launch dir. `paneId`
+ * is validated to `%<n>` in the backend before reaching the tmux argv.
+ */
+export function paneCwd(paneId: string): Promise<string> {
+  return invoke<string>("pane_cwd", { paneId });
+}
+
+/** A pane's current command (`claude.exe`, `zsh`, …) — picks the insert format
+ *  (claude → `@path` mention, shell → raw path). */
+export function paneCommand(paneId: string): Promise<string> {
+  return invoke<string>("pane_command", { paneId });
+}
+
+/** Right-click "Reveal in Finder" → `open -R <path>` (existence verified). */
+export function revealInFinder(path: string): Promise<void> {
+  return invoke<void>("reveal_in_finder", { path });
+}
+
+/** New File / New Folder: create `name` under `parent`. Backend validates the
+ *  name to a single safe segment (no traversal) and never clobbers. Returns the
+ *  created absolute path. */
+export function createEntry(parent: string, name: string, isDir: boolean): Promise<string> {
+  return invoke<string>("create_entry", { parent, name, isDir });
+}
+
+/** Delete → move a path to the macOS Trash (recoverable), never an unlink. */
+export function trashPath(path: string): Promise<void> {
+  return invoke<void>("trash_path", { path });
+}
+
+/** Live watch: set the exact dirs watched for changes (root + expanded folders),
+ *  each non-recursive. Empty list = unwatch all (sidebar hidden). */
+export function watchDirs(dirs: string[]): Promise<void> {
+  return invoke<void>("watch_dirs", { dirs });
+}
+
+/** "Send pane → new tab": break a pane into its own new window/tab (kept
+ *  running). Resolves to the new `windowId` so the caller can switch to it. */
+export function breakPane(paneId: string): Promise<string> {
+  return invoke<string>("break_pane", { paneId });
 }
 
 // ── Events (Rust -> FE) ───────────────────────────────────────────────────────
@@ -491,4 +573,12 @@ export function onCockpitReconnected(handler: () => void): Promise<UnlistenFn> {
  */
 export function onCloseRequested(handler: () => void): Promise<UnlistenFn> {
   return listen("cockpit:close-requested", () => handler());
+}
+
+/** File-tree live watch: a watched directory's contents changed. The handler
+ *  reloads just that dir (debounced) if it's currently visible. */
+export function onFileTreeChanged(
+  handler: (p: FileChangePayload) => void,
+): Promise<UnlistenFn> {
+  return listen<FileChangePayload>("filetree:changed", (e) => handler(e.payload));
 }

@@ -355,6 +355,17 @@ impl SessionManager {
         Ok(())
     }
 
+    /// "Send pane → new tab": break a pane out of its current window into a brand
+    /// new window (tmux `break-pane`), which the cockpit reconciles into a new tab.
+    /// The pane keeps running. Returns the new `#{window_id}` so the caller can
+    /// switch the active tab to it. (No `-d`: tmux focuses the new window; the
+    /// cockpit's active tab is frontend-driven and follows on reconcile.) Only
+    /// meaningful when the source tab has >1 pane — the frontend gates on that.
+    pub fn break_pane(&mut self, pane_id: &str) -> Result<String, String> {
+        let out = tmux::tmux_ok(&["break-pane", "-s", pane_id, "-P", "-F", "#{window_id}"])?;
+        Ok(out.trimmed())
+    }
+
     // ── F3/F4: launch ────────────────────────────────────────────────────────
 
     /// Launch Claude Code in a pane: `cd <cwd> && COCKPIT_PANE_ID=<pane> claude
@@ -714,6 +725,24 @@ impl SessionManager {
             "-t",
             pane_id,
         ])?;
+        if out.ok() {
+            Ok(B64.encode(trim_blank_edges(&out.stdout).as_bytes()))
+        } else {
+            Err(out.stderr.trim().to_string())
+        }
+    }
+
+    /// Like `warm_start` but the VISIBLE screen ONLY (no `-S -`, no scrollback).
+    /// Used by the post-resize re-sync: a SHELL redraws its prompt on every
+    /// SIGWINCH and leaves the old prompt in scrollback, so replaying the full
+    /// history (`warm_start`) surfaces a trail of accumulated prompts — exactly the
+    /// garble the user sees, which `Ctrl+L` cures by showing only the current
+    /// screen. tmux's VISIBLE grid is already clean at the settled width, so the
+    /// re-sync replays just that. (For a TUI like `claude` the visible grid is the
+    /// whole screen, so this stays correct there too — the original launch-garble
+    /// fix still holds.)
+    pub fn warm_start_screen(&self, pane_id: &str) -> Result<String, String> {
+        let out = tmux::tmux(&["capture-pane", "-p", "-e", "-t", pane_id])?;
         if out.ok() {
             Ok(B64.encode(trim_blank_edges(&out.stdout).as_bytes()))
         } else {

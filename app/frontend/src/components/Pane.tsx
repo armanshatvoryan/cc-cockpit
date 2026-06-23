@@ -7,7 +7,7 @@
 import { createSignal, Show, type Component } from "solid-js";
 import type { PaneInfo } from "../ipc";
 import { interruptPane } from "../ipc";
-import { focusPane, doClosePane } from "../store";
+import { focusPane, doClosePane, activePanes, sendPaneToNewTab } from "../store";
 import { StatusBadge } from "./StatusBadge";
 import { LaunchDialog } from "./LaunchDialog";
 import { XtermHost } from "../XtermHost";
@@ -60,6 +60,19 @@ export const Pane: Component<{ pane: PaneInfo; focused: boolean }> = (props) => 
         >
           Interrupt
         </button>
+
+        <Show when={activePanes().length > 1}>
+          <button
+            class="tb-btn"
+            title="Send pane to a new tab"
+            onClick={(e) => {
+              e.stopPropagation();
+              void sendPaneToNewTab(props.pane.paneId);
+            }}
+          >
+            ⤴
+          </button>
+        </Show>
 
         <button
           class="tb-btn tb-danger"

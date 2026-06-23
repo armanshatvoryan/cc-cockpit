@@ -35,6 +35,14 @@ tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+# File-tree sidebar (v1.1): .gitignore-aware directory walking (same engine as
+# ripgrep) so node_modules/target/.git never reach the tree or the fs-watcher.
+ignore = "0.4"
+# File-tree Delete → macOS Trash (recoverable), never an unlink.
+trash = "5"
+# File-tree live updates: watch the visible dirs (root + expanded), non-recursive,
+# so the tree reflects agents writing files without a manual refresh.
+notify = "6"
 # The PROVEN crates, brought in-tree (path deps to the workspace members).
 cockpit-control-mode = { path = "crates/control-mode" }
 cockpit-engine = { path = "crates/engine" }

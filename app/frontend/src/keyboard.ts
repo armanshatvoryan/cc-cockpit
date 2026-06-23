@@ -6,6 +6,7 @@
 //   ⌘⇧D         split focused pane vertically (stacked)
 //   ⌘I          toggle the inventory panel
 //   ⌘⇧T         toggle the live team board
+//   ⌘B          toggle the docked file-tree sidebar
 //   ⌘= / ⌘+     zoom the whole UI in   (+0.1)
 //   ⌘-          zoom the whole UI out  (−0.1)
 //   ⌘0          reset zoom to 1.0
@@ -28,6 +29,7 @@ import {
   toggleTeamBoard,
   closeTeamBoard,
   teamBoardOpen,
+  toggleSidebar,
 } from "./store";
 
 // ── C1: whole-UI zoom (webview setZoom, persisted) ───────────────────────────
@@ -144,6 +146,13 @@ export function installKeyboard(): void {
     if (k === "i") {
       e.preventDefault();
       toggleInventory();
+      return;
+    }
+
+    // ⌘B — toggle the docked file-tree sidebar.
+    if (k === "b") {
+      e.preventDefault();
+      toggleSidebar();
       return;
     }
   }
