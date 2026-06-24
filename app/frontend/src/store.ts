@@ -11,6 +11,7 @@
 import { createStore, produce, reconcile as reconcileStore } from "solid-js/store";
 import { createSignal, type Accessor } from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import {
   cockpitInit,
   createTab,
@@ -28,11 +29,24 @@ import {
   pluginTogglePreview,
   launchCc,
   launchAgent,
+  launchShell,
   paneSendKeys,
+  listDir,
+  paneCwd,
+  paneCommand,
+  revealInFinder,
+  createEntry,
+  trashPath,
+  watchDirs,
+  breakPane,
+  gitStatusSnapshot,
+  saveLayout,
+  loadLayout,
   onPaneStatus,
   onPaneTopology,
   onCockpitReconnected,
   onCloseRequested,
+  onFileTreeChanged,
   type CockpitState,
   type PaneInfo,
   type TabInfo,
@@ -43,6 +57,10 @@ import {
   type Roster,
   type Workflow,
   type SpinupPreview,
+  type GitStatus,
+  type LayoutSnapshot,
+  type TabLayout,
+  type FileEntry,
 } from "./ipc";
 
 interface CockpitStore extends CockpitState {
@@ -68,7 +86,11 @@ const [focusedPaneId, setFocusedPaneId] = createSignal<string | null>(null);
 // Local-only tab display-name overrides (v1 rename is client-side only).
 const [tabNameOverrides, setTabNameOverrides] = createStore<Record<string, string>>({});
 
-export { store, activeTabId, focusedPaneId };
+// dev#2 — per-tab git status of its first-pane cwd. `null` = cwd isn't a repo;
+// absent key = not yet polled. Only the ACTIVE tab is refreshed (cheap).
+const [gitStatus, setGitStatus] = createStore<Record<string, GitStatus | null>>({});
+
+export { store, activeTabId, focusedPaneId, gitStatus };
 
 // ── Selectors ─────────────────────────────────────────────────────────────────
 
@@ -142,6 +164,99 @@ export async function refreshState(): Promise<void> {
   }
 }
 
+// ── C2: OS attention (dock bounce + badge) ──────────────────────────────────
+// When a pane needs input while the cockpit is in the background, bounce the
+// dock and badge the window with the count. Cleared the moment the window
+// regains focus. Best-effort: every call swallows its own rejection so a missing
+// permission / platform quirk never escalates into a store error.
+
+/** Number of panes currently waiting on the user. */
+function needsInputCount(): number {
+  return store.panes.filter((p) => p.status === "NEEDS_INPUT").length;
+}
+
+/** Bounce + badge when backgrounded and something needs input. */
+function signalAttention(): void {
+  const count = needsInputCount();
+  if (count <= 0 || document.hasFocus()) return;
+  const win = getCurrentWindow();
+  void win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
+  void win.setBadgeCount(count).catch(() => {});
+}
+
+/** Drop the bounce + clear the badge (on window focus). `undefined` ⇒ None ⇒
+ *  clears the badge — the type excludes `null` and `0` would render a "0" badge. */
+function clearAttention(): void {
+  const win = getCurrentWindow();
+  void win.requestUserAttention(null).catch(() => {});
+  void win.setBadgeCount(undefined).catch(() => {});
+}
+
+// ── dev#1: disk-persisted layout ────────────────────────────────────────────
+// Mirror the open tabs (position + first-pane cwd + local rename) + the active
+// tab to disk, debounced. On boot we replay saved renames onto the live tabs
+// matched by (index, cwd). Best-effort throughout — a write/read failure logs
+// and is dropped; it must never block a UI action or boot.
+
+/** Build the snapshot from current store state. */
+function buildLayoutSnapshot(): LayoutSnapshot {
+  const tabs: TabLayout[] = store.tabs.map((t) => {
+    const cwd = store.panes.find((p) => p.paneId === t.paneIds[0])?.cwd ?? "";
+    return { index: t.index, cwd, customTitle: tabNameOverrides[t.tabId] ?? null };
+  });
+  return { schemaVersion: 1, activeTabId: activeTabId(), tabs };
+}
+
+let persistTimer: number | undefined;
+/** Debounced persist (~300ms) so a burst of tab ops coalesces into one write. */
+function persistLayout(): void {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(() => {
+    void saveLayout(buildLayoutSnapshot()).catch((e) =>
+      console.warn("save_layout failed", e),
+    );
+  }, 300);
+}
+
+/** Replay persisted renames + active tab onto the freshly reconciled state. */
+async function restoreLayout(): Promise<void> {
+  try {
+    const saved = await loadLayout();
+    if (!saved) return;
+    for (const tl of saved.tabs) {
+      if (!tl.customTitle) continue;
+      const liveTab = store.tabs.find(
+        (t) =>
+          t.index === tl.index &&
+          store.panes.find((p) => p.paneId === t.paneIds[0])?.cwd === tl.cwd,
+      );
+      if (liveTab) renameTabLocal(liveTab.tabId, tl.customTitle);
+    }
+    if (saved.activeTabId && store.tabs.some((t) => t.tabId === saved.activeTabId)) {
+      setActiveTabId(saved.activeTabId);
+    }
+  } catch (e) {
+    console.warn("load_layout/restore failed", e);
+  }
+}
+
+// ── dev#2: per-worktree git status ──────────────────────────────────────────
+// Poll only the ACTIVE tab's first-pane cwd (a switch + an 8s interval). Cheap:
+// one `git status` per cycle, never an all-tabs hammer.
+
+/** Refresh the active tab's git badge from its first-pane cwd. */
+async function refreshActiveGitStatus(): Promise<void> {
+  const tab = activeTab();
+  if (!tab) return;
+  const cwd = store.panes.find((p) => p.paneId === tab.paneIds[0])?.cwd;
+  if (!cwd) return;
+  try {
+    setGitStatus(tab.tabId, await gitStatusSnapshot(cwd));
+  } catch {
+    /* git missing / transient — keep the last known badge */
+  }
+}
+
 // ── Boot ────────────────────────────────────────────────────────────────────
 
 let unlisteners: UnlistenFn[] = [];
@@ -159,6 +274,11 @@ export async function bootCockpit(): Promise<void> {
   reconcile(state);
   setStore("ready", true);
 
+  // dev#1 — best-effort replay of persisted renames + active tab. Never throws.
+  await restoreLayout();
+  // dev#2 — paint the active tab's git badge immediately, then poll it.
+  void refreshActiveGitStatus();
+
   // pane:status — patch the matching pane's status badge in place.
   const unStatus = await onPaneStatus((p) => {
     setStore(
@@ -170,6 +290,9 @@ export async function bootCockpit(): Promise<void> {
         if (p.status === "DEAD") pane.dead = true;
       }),
     );
+    // C2 — after the patch (setStore is sync), bounce + badge if we're in the
+    // background and any pane now needs input.
+    signalAttention();
   });
 
   // pane:topology — any structural change → full reconcile.
@@ -192,7 +315,25 @@ export async function bootCockpit(): Promise<void> {
   // (or the active tab if it's the last pane) instead of the whole window.
   const unCloseReq = await onCloseRequested(() => void closeFocusedPaneOrTab());
 
-  unlisteners = [unStatus, unTopo, unReconnect, unCloseReq];
+  // C2 — clear the dock bounce + badge the moment the cockpit regains focus.
+  const onWinFocus = () => clearAttention();
+  window.addEventListener("focus", onWinFocus);
+  const unFocus: UnlistenFn = () => window.removeEventListener("focus", onWinFocus);
+
+  // dev#2 — refresh the active tab's git badge every 8s (active tab only).
+  const gitInterval = window.setInterval(() => void refreshActiveGitStatus(), 8000);
+  const unGit: UnlistenFn = () => clearInterval(gitInterval);
+
+  // v1.1 — root the file-tree on the active pane now, then follow it (a shell cd
+  // emits no topology event, so poll the focused pane's cwd every 1.5s).
+  void syncFileTreeRoot();
+  const ftInterval = window.setInterval(() => void syncFileTreeRoot(), 1500);
+  const unFt: UnlistenFn = () => clearInterval(ftInterval);
+
+  // v1.1 — live fs-watch: reload a visible dir when the backend reports it changed.
+  const unFtChange = await onFileTreeChanged((p) => ftOnChanged(p.dir));
+
+  unlisteners = [unStatus, unTopo, unReconnect, unCloseReq, unFocus, unGit, unFt, unFtChange];
 }
 
 /** Tear down event subscriptions (window close / HMR). */
@@ -289,6 +430,7 @@ function scheduleResync(): void {
 
 export function focusPane(paneId: string): void {
   setFocusedPaneId(paneId);
+  void syncFileTreeRoot(); // v1.1 — tree follows the newly focused pane's cwd
 }
 
 export function switchTab(tabId: string): void {
@@ -296,6 +438,9 @@ export function switchTab(tabId: string): void {
   // Move focus into the newly active tab's first pane.
   const tab = store.tabs.find((t) => t.tabId === tabId);
   setFocusedPaneId(tab?.paneIds[0] ?? null);
+  void refreshActiveGitStatus(); // dev#2 — repaint badge for the new active tab
+  void syncFileTreeRoot(); // v1.1 — tree follows the new active tab's cwd
+  persistLayout(); // dev#1 — active tab changed
 }
 
 /** Switch to the Nth tab (0-based) if it exists — for Cmd+1..9. */
@@ -311,6 +456,8 @@ export async function newTab(name?: string): Promise<void> {
     await refreshState();
     setActiveTabId(res.tabId);
     setFocusedPaneId(res.paneId);
+    void refreshActiveGitStatus(); // dev#2 — badge the freshly created tab
+    persistLayout(); // dev#1
   } catch (e) {
     setStore("error", `create_tab failed: ${String(e)}`);
   }
@@ -324,12 +471,23 @@ export async function requestCloseTab(
   tabId: string,
   force = false,
 ): Promise<{ needsConfirm: boolean; livePanes: string[] }> {
+  // Resolve to the STABLE tmux window id. tab_id encodes the mutable window
+  // index, which tmux reuses for new windows — closing by index can hit the
+  // wrong window or a gone one. If the tab already reconciled away (its window
+  // closed under us), there's nothing to kill; just resync.
+  const tab = store.tabs.find((t) => t.tabId === tabId);
+  if (!tab) {
+    await refreshState();
+    return { needsConfirm: false, livePanes: [] };
+  }
   try {
-    const res = await closeTab(tabId, force);
+    const res = await closeTab(tab.tmuxWindowId, force);
     if (!res.ok && res.livePanes.length > 0) {
       return { needsConfirm: true, livePanes: res.livePanes };
     }
     await refreshState();
+    persistLayout(); // dev#1 — tab set changed (stale gitStatus keys are never
+    // read: chips only render for live tabs, so no cleanup needed)
     return { needsConfirm: false, livePanes: [] };
   } catch (e) {
     setStore("error", `close_tab failed: ${String(e)}`);
@@ -379,6 +537,7 @@ export async function closeFocusedPaneOrTab(): Promise<void> {
 
 export function renameTabLocal(tabId: string, name: string): void {
   setTabNameOverrides(tabId, name);
+  persistLayout(); // dev#1 — local rename is part of the persisted layout
 }
 
 export function clearError(): void {
@@ -835,5 +994,351 @@ export async function confirmToggle(): Promise<void> {
     setStore("error", `plugin toggle failed: ${String(e)}`);
   } finally {
     setTogglingId(null);
+  }
+}
+
+// ── File-tree sidebar (v1.1) ──────────────────────────────────────────────────
+//
+// A DOCKED left sidebar (⌘B), not an overlay — a navigation + path helper for the
+// terminals/agents, NOT an editor. The tree FOLLOWS the active pane's cwd: we
+// PROBE the focused pane's `pane_current_path` on a poll, because a shell `cd`
+// fires no topology event so the reconciled `PaneInfo.cwd` goes stale. Lazy —
+// one `list_dir` per opened folder, cached in `entries` (keyed by abs path).
+
+interface FileTreeStore {
+  /** Current root = the active pane's cwd. */
+  root: string;
+  /** dir path → its immediate children (load cache). */
+  entries: Record<string, FileEntry[]>;
+  /** dir path → mid-load (for a spinner; avoids double-fetch). */
+  loading: Record<string, boolean>;
+  error: string | null;
+}
+const [fileTree, setFileTree] = createStore<FileTreeStore>({
+  root: "",
+  entries: {},
+  loading: {},
+  error: null,
+});
+/** Sidebar shown? Docked + default on; ⌘B toggles. */
+const [sidebarVisible, setSidebarVisible] = createSignal(true);
+/** Which folders are expanded (keyed by abs path). */
+const [ftExpanded, setFtExpanded] = createStore<Record<string, boolean>>({});
+/** Show dotfiles? (⚙ toggle). `.gitignore` filtering is independent + always on. */
+const [ftShowHidden, setFtShowHidden] = createSignal(false);
+export { fileTree, sidebarVisible, ftExpanded, ftShowHidden };
+
+/** Children of the current root (the top level the tree renders). */
+export function ftRootEntries(): FileEntry[] {
+  return fileTree.entries[fileTree.root] ?? [];
+}
+
+/** Load (or reload) one directory's children into the cache. Never throws — a
+ *  permission error surfaces as the panel error, not a blank tree. */
+export async function ftLoadDir(path: string): Promise<void> {
+  if (!path) return;
+  setFileTree("loading", path, true);
+  try {
+    const entries = await listDir(path, ftShowHidden());
+    setFileTree("entries", path, entries);
+    setFileTree("error", null);
+  } catch (e) {
+    setFileTree("error", String(e));
+  } finally {
+    setFileTree("loading", path, false);
+  }
+}
+
+/** Expand/collapse a folder; lazy-load its children on first expand. */
+export function ftToggleExpand(path: string): void {
+  const open = !!ftExpanded[path];
+  setFtExpanded(path, !open);
+  if (!open && !fileTree.entries[path]) void ftLoadDir(path);
+  ftSyncWatched(); // visible set changed → update the watcher
+}
+
+/** Re-root the tree (the active pane's cwd changed). Always reloads the new root
+ *  fresh; expansion state is kept (keyed by abs path, so it's harmless). */
+export function ftSetRoot(path: string): void {
+  if (!path || path === fileTree.root) return;
+  setFileTree("root", path);
+  void ftLoadDir(path);
+  ftSyncWatched(); // root changed → re-watch
+}
+
+/** ⌘B — show/hide the docked sidebar. Re-syncs the root + watcher when toggled. */
+export function toggleSidebar(): void {
+  setSidebarVisible((v) => !v);
+  if (sidebarVisible()) void syncFileTreeRoot();
+  ftSyncWatched(); // watch the visible set, or clear it when hidden
+}
+
+/** Flip show-dotfiles and re-list every cached dir so the filter re-applies. */
+export function ftToggleHidden(): void {
+  setFtShowHidden((v) => !v);
+  for (const dir of Object.keys(fileTree.entries)) void ftLoadDir(dir);
+}
+
+/** Manual ⟳: reload the root + every currently-expanded dir from disk. */
+export function ftRefresh(): void {
+  void ftLoadDir(fileTree.root);
+  for (const [path, open] of Object.entries(ftExpanded)) {
+    if (open) void ftLoadDir(path);
+  }
+}
+
+/** Probe the focused pane's live cwd and re-root the tree there if it moved.
+ *  The tree follows the active pane; shell `cd`s don't emit topology, so this
+ *  runs on a poll + on focus/tab change. Cheap (one `display-message`). */
+export async function syncFileTreeRoot(): Promise<void> {
+  if (!sidebarVisible()) return; // don't probe a hidden sidebar
+  const pid = focusedPaneId();
+  let cwd: string | undefined;
+  if (pid) {
+    try {
+      cwd = await paneCwd(pid);
+    } catch {
+      cwd = undefined; // dead/odd pane — fall back below
+    }
+  }
+  if (!cwd) cwd = focusedPane()?.cwd || store.panes[0]?.cwd;
+  if (cwd && cwd !== fileTree.root) ftSetRoot(cwd);
+}
+
+// ── File-tree actions (v1.1 Phase C) ──────────────────────────────────────────
+// All actions DRIVE the terminals/agents — there is no editor. Path inserts use
+// `paneSendKeys` (same channel as typing); creates/trash hit the validated
+// backend; "open in terminal" reuses the tab/shell launch plumbing.
+
+/** Path of `abs` relative to `base` (else `abs` if it isn't under `base`). */
+function relativeTo(base: string, abs: string): string {
+  if (!base) return abs;
+  if (abs === base) return ".";
+  const b = base.endsWith("/") ? base : base + "/";
+  return abs.startsWith(b) ? abs.slice(b.length) : abs;
+}
+
+function parentDir(p: string): string {
+  const t = p.replace(/\/+$/, "");
+  const i = t.lastIndexOf("/");
+  return i <= 0 ? "/" : t.slice(0, i);
+}
+
+function baseName(p: string): string {
+  const parts = p.replace(/\/+$/, "").split("/");
+  return parts[parts.length - 1] || p;
+}
+
+/** Shell-quote a path that has anything beyond a safe charset (defense at the
+ *  send boundary — a path with spaces/specials must reach the shell intact). */
+function shellQuoteIfNeeded(s: string): string {
+  return /[^A-Za-z0-9._/-]/.test(s) ? `'${s.replace(/'/g, `'\\''`)}'` : s;
+}
+
+/** Insert a path into a pane, formatted for the pane's kind: a claude pane gets
+ *  an `@<relpath>` mention, a shell gets a (shell-quoted) raw relpath. Relative
+ *  to the pane's own cwd; NO trailing Enter (you prefix a command / edit first). */
+async function insertPathInto(paneId: string, absPath: string): Promise<void> {
+  let base = fileTree.root;
+  try {
+    base = await paneCwd(paneId);
+  } catch {
+    /* keep tree root as the relativity base */
+  }
+  const rel = relativeTo(base, absPath);
+  let isClaude = false;
+  try {
+    isClaude = (await paneCommand(paneId)).toLowerCase().includes("claude");
+  } catch {
+    /* default to shell formatting */
+  }
+  paneSendKeys(paneId, isClaude ? `@${rel}` : shellQuoteIfNeeded(rel));
+}
+
+/** Double-click a file → insert its path into the ACTIVE pane (D1/D5). */
+export async function ftInsertIntoActivePane(entry: FileEntry): Promise<void> {
+  if (entry.isDir) return;
+  const pid = focusedPaneId();
+  if (pid) await insertPathInto(pid, entry.path);
+}
+
+/** Right-click "Open in Terminal": a NEW tab with a shell cd'd into the folder
+ *  (a file → its parent dir). */
+export async function ftOpenInTerminal(entry: FileEntry): Promise<void> {
+  const dir = entry.isDir ? entry.path : parentDir(entry.path);
+  try {
+    const res = await createTab(baseName(dir));
+    await refreshState();
+    setActiveTabId(res.tabId);
+    setFocusedPaneId(res.paneId);
+    await launchShell(res.paneId, dir);
+  } catch (e) {
+    setStore("error", `open in terminal failed: ${String(e)}`);
+  }
+}
+
+export async function ftRevealInFinder(path: string): Promise<void> {
+  try {
+    await revealInFinder(path);
+  } catch (e) {
+    setStore("error", `reveal failed: ${String(e)}`);
+  }
+}
+
+async function copyText(t: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(t);
+  } catch {
+    setStore("error", "clipboard write failed");
+  }
+}
+/** Copy Path = absolute. */
+export function ftCopyPath(path: string): void {
+  void copyText(path);
+}
+/** Copy Relative Path = relative to the tree root (the active cwd). */
+export function ftCopyRelPath(path: string): void {
+  void copyText(relativeTo(fileTree.root, path));
+}
+
+// ── Inline New File / New Folder ──────────────────────────────────────────────
+interface FtNewEntry {
+  parent: string;
+  isDir: boolean;
+}
+const [ftNewEntry, setFtNewEntry] = createSignal<FtNewEntry | null>(null);
+export { ftNewEntry };
+
+/** Begin an inline new file/folder under `parent` (default = the root). */
+export function ftBeginNew(isDir: boolean, parent?: string): void {
+  const dir = parent ?? fileTree.root;
+  if (parent && !ftExpanded[parent]) {
+    setFtExpanded(parent, true);
+    if (!fileTree.entries[parent]) void ftLoadDir(parent);
+  }
+  setFtNewEntry({ parent: dir, isDir });
+}
+export function ftCancelNew(): void {
+  setFtNewEntry(null);
+}
+/** Commit the inline new entry (Enter): create on disk + reload the parent. */
+export async function ftCommitNew(name: string): Promise<void> {
+  const ne = ftNewEntry();
+  setFtNewEntry(null);
+  if (!ne) return;
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  try {
+    await createEntry(ne.parent, trimmed, ne.isDir);
+    await ftLoadDir(ne.parent); // surface the new entry
+  } catch (e) {
+    setStore("error", `create failed: ${String(e)}`);
+  }
+}
+
+// ── Delete (confirm → Trash) ──────────────────────────────────────────────────
+const [ftPendingDelete, setFtPendingDelete] = createSignal<FileEntry | null>(null);
+export { ftPendingDelete };
+export function ftRequestDelete(entry: FileEntry): void {
+  setFtPendingDelete(entry);
+}
+export function ftCancelDelete(): void {
+  setFtPendingDelete(null);
+}
+/** Confirm: move to Trash (recoverable) + reload the parent dir. */
+export async function ftConfirmDelete(): Promise<void> {
+  const e = ftPendingDelete();
+  setFtPendingDelete(null);
+  if (!e) return;
+  try {
+    await trashPath(e.path);
+    await ftLoadDir(parentDir(e.path));
+  } catch (err) {
+    setStore("error", `delete failed: ${String(err)}`);
+  }
+}
+
+// ── Attach to Agent ───────────────────────────────────────────────────────────
+/** Live agent panes for the Attach-to-Agent submenu: team-board members whose
+ *  `%N` pane this cockpit currently tracks (deduped). */
+export function ftLiveAgents(): { paneId: string; label: string }[] {
+  const seen = new Set<string>();
+  const out: { paneId: string; label: string }[] = [];
+  for (const run of teamBoard.runs) {
+    for (const m of run.members) {
+      if (m.tmuxPaneId && memberPaneIsLive(m.tmuxPaneId) && !seen.has(m.tmuxPaneId)) {
+        seen.add(m.tmuxPaneId);
+        out.push({ paneId: m.tmuxPaneId, label: `${m.name || m.agentId} ${m.tmuxPaneId}` });
+      }
+    }
+  }
+  return out;
+}
+/** Attach a file to a chosen agent: insert its path into that agent's pane.
+ *  (insertPathInto detects the claude pane → `@path` mention.) */
+export async function ftAttachToAgent(entry: FileEntry, paneId: string): Promise<void> {
+  await insertPathInto(paneId, entry.path);
+}
+
+// ── Context menu (right-click) ────────────────────────────────────────────────
+interface FtMenu {
+  entry: FileEntry;
+  x: number;
+  y: number;
+}
+const [ftMenu, setFtMenu] = createSignal<FtMenu | null>(null);
+export { ftMenu };
+/** Open the right-click menu at (x,y); refresh live team runs so the
+ *  Attach-to-Agent submenu is populated. */
+export function ftOpenMenu(entry: FileEntry, x: number, y: number): void {
+  setFtMenu({ entry, x, y });
+  void loadTeamRunsNow();
+}
+export function ftCloseMenu(): void {
+  setFtMenu(null);
+}
+
+// ── Live fs-watch (Phase D) ───────────────────────────────────────────────────
+// The visible dirs (root + expanded) are watched non-recursively. On a change the
+// backend emits `filetree:changed { dir }`; we debounce-reload that one dir.
+
+/** The dirs currently visible (root + expanded folders) — the watch set. */
+function ftWatchedDirs(): string[] {
+  const dirs = new Set<string>();
+  if (fileTree.root) dirs.add(fileTree.root);
+  for (const [p, open] of Object.entries(ftExpanded)) if (open) dirs.add(p);
+  return [...dirs];
+}
+
+/** Push the current visible set to the backend watcher (or clear it when the
+ *  sidebar is hidden). Cheap diff server-side; safe to call on every change. */
+export function ftSyncWatched(): void {
+  void watchDirs(sidebarVisible() ? ftWatchedDirs() : []);
+}
+
+// One debounce timer per changed dir (agents write bursts; coalesce reloads).
+const ftReloadTimers: Record<string, number> = {};
+/** A watched dir changed → reload it (debounced) if it's currently shown. */
+function ftOnChanged(dir: string): void {
+  if (dir !== fileTree.root && !(dir in fileTree.entries)) return; // not visible
+  if (ftReloadTimers[dir]) clearTimeout(ftReloadTimers[dir]);
+  ftReloadTimers[dir] = window.setTimeout(() => void ftLoadDir(dir), 150);
+}
+export { ftOnChanged };
+
+// ── Send pane → new tab (Phase E) ─────────────────────────────────────────────
+/** Break a pane out into its own new tab (kept running) + switch to it. The
+ *  caller (pane chrome) only offers this when the tab has >1 pane. */
+export async function sendPaneToNewTab(paneId: string): Promise<void> {
+  try {
+    const windowId = await breakPane(paneId);
+    await refreshState();
+    const tab = store.tabs.find((t) => t.tmuxWindowId === windowId);
+    if (tab) {
+      setActiveTabId(tab.tabId);
+      setFocusedPaneId(paneId);
+    }
+  } catch (e) {
+    setStore("error", `send to new tab failed: ${String(e)}`);
   }
 }

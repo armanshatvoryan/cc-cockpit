@@ -237,6 +237,61 @@ fn main() {
         }
     }
 
+    // 6d. CLOSE IDEMPOTENCY — closing a window that's already gone must be a no-op
+    // success, never a hard error. Direct regression guard for the "close_tab
+    // failed: can't find window: N" toast: tabs are closed by stable window id
+    // (@n), and a vanished window already IS closed.
+    match mgr.close_tab("@99999", true) {
+        Ok(r) if r.ok => println!("[smoke] close_tab(@99999 absent) idempotent OK"),
+        Ok(r) => {
+            eprintln!("FAIL close_tab(absent) returned ok=false: {:?}", r.live_panes);
+            fail += 1;
+        }
+        Err(e) => {
+            eprintln!("FAIL close_tab(absent) errored (should be idempotent): {e}");
+            fail += 1;
+        }
+    }
+    // A mutable index-style target (the old bug's shape) must be REJECTED before it
+    // ever reaches tmux — close addresses the stable @n only.
+    match mgr.close_tab("cockpit-main:1", true) {
+        Err(_) => println!("[smoke] close_tab rejects index-style target OK"),
+        Ok(_) => {
+            eprintln!("FAIL close_tab accepted a non-@ target 'cockpit-main:1'");
+            fail += 1;
+        }
+    }
+
+    // 6e. EMPTY-STATE RE-CREATE — closing every tab destroys the tmux session (it
+    // can't hold 0 windows); the next create must re-heal + ADOPT the lone
+    // bootstrap window, yielding EXACTLY ONE tab, not two. Direct regression guard
+    // for "close last tab → ⌘T opens 2 tabs". Closing by stable @n, idempotent.
+    let windows: Vec<String> = mgr
+        .list_state()
+        .map(|s| s.tabs.iter().map(|t| t.tmux_window_id.clone()).collect())
+        .unwrap_or_default();
+    for w in &windows {
+        let _ = mgr.close_tab(w, true);
+    }
+    match mgr.create_tab_healing(None) {
+        Ok((tab, _rx)) => {
+            let n = mgr.list_state().map(|s| s.tabs.len()).unwrap_or(0);
+            if n == 1 {
+                println!(
+                    "[smoke] empty→create = exactly 1 tab OK (adopted {})",
+                    tab.tmux_window_id
+                );
+            } else {
+                eprintln!("FAIL empty→create yielded {n} tab(s), want exactly 1");
+                fail += 1;
+            }
+        }
+        Err(e) => {
+            eprintln!("FAIL create_tab_healing after empty: {e}");
+            fail += 1;
+        }
+    }
+
     // 7. teardown — kill the cockpit session on the PRIVATE socket only.
     mgr.teardown();
     println!("[smoke] teardown OK — cockpit session killed on -L cockpit");

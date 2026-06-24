@@ -20,6 +20,7 @@ import {
   onPaneData,
   paneSendKeys,
   warmStart,
+  warmStartScreen,
   type PaneDataPayload,
 } from "./ipc";
 import { reportCell } from "./store";
@@ -126,15 +127,22 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     ro.observe(hostEl);
 
     // Re-sync to tmux's authoritative grid after a pane resize (see
-    // store.scheduleResync). xterm's own reflow of a full-screen TUI leaves the
-    // old, wider frame wrapped + scattered in scrollback; tmux holds the pane's
-    // clean grid re-rendered at the new width, so wipe xterm and replay it. This
-    // is the automated form of the Ctrl+L the user would otherwise press. Guard
-    // the hidden case (0×0) and the unmount race.
+    // store.scheduleResync). xterm's own reflow leaves the old, wider frame
+    // wrapped + scattered; tmux holds the pane's clean grid re-rendered at the new
+    // width, so wipe xterm and replay it. This is the automated form of the Ctrl+L
+    // the user would otherwise press.
+    //
+    // Replay the VISIBLE screen ONLY (`warmStartScreen`), NOT the scrollback: a
+    // shell redraws its prompt on every SIGWINCH and leaves the old prompt in
+    // scrollback, so replaying full history (`warmStart`) dumps a trail of
+    // accumulated prompts back into xterm — the exact "adds new lines every ⌘B/⌘D"
+    // garble. The visible grid is clean (it's what Ctrl+L shows), so replay that.
+    // (Mount still uses full-scrollback `warmStart` to restore a re-attached
+    // pane's history.) Guard the hidden case (0×0) and the unmount race.
     const onResync = () => {
       if (disposed || hostEl.clientWidth === 0 || hostEl.clientHeight === 0)
         return;
-      warmStart(paneId)
+      warmStartScreen(paneId)
         .then((w) => {
           if (disposed || !w.bytesB64) return;
           term.reset();

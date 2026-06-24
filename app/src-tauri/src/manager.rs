@@ -131,6 +131,22 @@ pub fn tab_id_for_index(index: u32) -> String {
     format!("tab-{index}")
 }
 
+/// A tmux window id is `@` followed by ASCII digits (e.g. `@3`). Validated before
+/// it reaches a tmux `-t` target so a stale/config string can never smuggle an
+/// extra flag or shell payload into the argv. Closing addresses windows by this
+/// STABLE id, never the mutable window index (which tmux reuses for new windows).
+pub fn is_window_id(s: &str) -> bool {
+    s.len() >= 2 && s.starts_with('@') && s[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// tmux's "target window/pane doesn't exist" stderr — treated as idempotent
+/// success when closing a tab: a window that's already gone IS closed, so a no-op
+/// kill must not surface a scary error.
+fn is_missing_target(stderr: &str) -> bool {
+    let e = stderr.to_ascii_lowercase();
+    e.contains("can't find window") || e.contains("can't find pane")
+}
+
 /// Does this tmux error mean the server or our session is gone — so a re-heal +
 /// re-attach would recover? Matches the admin-path failure strings that warrant a
 /// reconnect, and deliberately does NOT match "can't find window/pane" (a stale
@@ -262,13 +278,74 @@ impl SessionManager {
         })
     }
 
-    /// Inspect a tab's live panes (for close confirmation). On `force`, kill it.
-    pub fn close_tab(&mut self, tab_id: &str, force: bool) -> Result<CloseTabResult, String> {
-        let win_index = parse_tab_index(tab_id)?;
-        let target = format!("{SESSION}:{win_index}");
+    /// After the cockpit session was destroyed (the user closed the last tab —
+    /// tmux can't hold a 0-window session) and then re-created, surface its single
+    /// bootstrap window as the "new" tab. Every fresh tmux session is born with one
+    /// window, so calling `create_tab` (new-window) here would sit a SECOND window
+    /// on top of that bootstrap → one ⌘T from the empty state yields two tabs.
+    /// Mirrors what boot's `list_state` already does for the bootstrap window.
+    /// Best-effort rename when a name is given.
+    pub fn adopt_bootstrap_tab(&mut self, name: Option<&str>) -> Result<CreateTabResult, String> {
+        let tab = self
+            .collect_tabs()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "re-healed session has no window to adopt".to_string())?;
+        if let Some(n) = name {
+            if !n.is_empty() {
+                let _ = tmux::tmux(&["rename-window", "-t", &tab.tmux_window_id, n]);
+            }
+        }
+        let pane_id = tab.pane_ids.first().cloned().unwrap_or_default();
+        Ok(CreateTabResult {
+            tab_id: tab.tab_id,
+            tmux_window_id: tab.tmux_window_id,
+            pane_id,
+        })
+    }
 
-        // List live (non-dead) panes in the tab.
-        let live = self.live_panes_in_window(&target)?;
+    /// Create a new tab, healing a destroyed session correctly. When the session is
+    /// ALIVE, add a fresh window (`create_tab`). When it's GONE (the last tab was
+    /// closed, which destroys the tmux session) or poisoned, re-create + re-attach
+    /// the control client and ADOPT the lone bootstrap window — never `new-window` a
+    /// SECOND window on top of it. Returns the new `Outbound` receiver when a
+    /// re-attach happened, so the caller rebinds the event forwarder (same contract
+    /// as `with_reattach`).
+    pub fn create_tab_healing(
+        &mut self,
+        name: Option<&str>,
+    ) -> Result<
+        (
+            CreateTabResult,
+            Option<std::sync::mpsc::Receiver<cockpit_engine::Outbound>>,
+        ),
+        String,
+    > {
+        if tmux::has_session() && tmux::server_healthy() {
+            let tab = self.create_tab(name)?;
+            Ok((tab, None))
+        } else {
+            let rx = self.init()?;
+            let tab = self.adopt_bootstrap_tab(name)?;
+            Ok((tab, Some(rx)))
+        }
+    }
+
+    /// Inspect a tab's live panes (for close confirmation). On `force`, kill it.
+    ///
+    /// Targets the tab by its STABLE tmux window id (`@n`), never the window
+    /// *index*. Indices are mutable and tmux reuses a freed index for the next
+    /// new/broken-out window, so a close-by-index can hit the WRONG window — or a
+    /// window that's already gone, which used to surface a scary `can't find
+    /// window: N` error. Closing an already-absent window is idempotent success:
+    /// the tab IS gone, which is exactly what "close" means.
+    pub fn close_tab(&mut self, window_id: &str, force: bool) -> Result<CloseTabResult, String> {
+        if !is_window_id(window_id) {
+            return Err(format!("bad window id {window_id:?}, want @<n>"));
+        }
+
+        // List live (non-dead) panes in the window.
+        let live = self.live_panes_in_window(window_id)?;
 
         if !force && !live.is_empty() {
             // Frontend should confirm; do NOT kill yet.
@@ -278,7 +355,14 @@ impl SessionManager {
             });
         }
 
-        tmux::tmux_ok(&["kill-window", "-t", &target])?;
+        let out = tmux::tmux(&["kill-window", "-t", window_id])?;
+        if !out.ok() && !is_missing_target(&out.stderr) {
+            return Err(format!(
+                "tmux kill-window -t {window_id} failed (exit {}): {}",
+                out.status,
+                out.stderr.trim()
+            ));
+        }
         Ok(CloseTabResult {
             ok: true,
             live_panes: vec![],
@@ -353,6 +437,17 @@ impl SessionManager {
         }
         self.last_status.remove(pane_id);
         Ok(())
+    }
+
+    /// "Send pane → new tab": break a pane out of its current window into a brand
+    /// new window (tmux `break-pane`), which the cockpit reconciles into a new tab.
+    /// The pane keeps running. Returns the new `#{window_id}` so the caller can
+    /// switch the active tab to it. (No `-d`: tmux focuses the new window; the
+    /// cockpit's active tab is frontend-driven and follows on reconcile.) Only
+    /// meaningful when the source tab has >1 pane — the frontend gates on that.
+    pub fn break_pane(&mut self, pane_id: &str) -> Result<String, String> {
+        let out = tmux::tmux_ok(&["break-pane", "-s", pane_id, "-P", "-F", "#{window_id}"])?;
+        Ok(out.trimmed())
     }
 
     // ── F3/F4: launch ────────────────────────────────────────────────────────
@@ -721,6 +816,24 @@ impl SessionManager {
         }
     }
 
+    /// Like `warm_start` but the VISIBLE screen ONLY (no `-S -`, no scrollback).
+    /// Used by the post-resize re-sync: a SHELL redraws its prompt on every
+    /// SIGWINCH and leaves the old prompt in scrollback, so replaying the full
+    /// history (`warm_start`) surfaces a trail of accumulated prompts — exactly the
+    /// garble the user sees, which `Ctrl+L` cures by showing only the current
+    /// screen. tmux's VISIBLE grid is already clean at the settled width, so the
+    /// re-sync replays just that. (For a TUI like `claude` the visible grid is the
+    /// whole screen, so this stays correct there too — the original launch-garble
+    /// fix still holds.)
+    pub fn warm_start_screen(&self, pane_id: &str) -> Result<String, String> {
+        let out = tmux::tmux(&["capture-pane", "-p", "-e", "-t", pane_id])?;
+        if out.ok() {
+            Ok(B64.encode(trim_blank_edges(&out.stdout).as_bytes()))
+        } else {
+            Err(out.stderr.trim().to_string())
+        }
+    }
+
     /// Tear down: detach the control client, then kill the cockpit session on the
     /// PRIVATE socket only. NEVER `kill-server` (would also kill the default
     /// socket's server if mis-targeted — we always pass -L cockpit, but kill the
@@ -764,14 +877,6 @@ fn activity_epoch_secs(raw: &str) -> Option<u64> {
     }
 }
 
-/// Parse `tab-<n>` -> n. Errors on a malformed tab id.
-fn parse_tab_index(tab_id: &str) -> Result<u32, String> {
-    tab_id
-        .strip_prefix("tab-")
-        .and_then(|s| s.parse::<u32>().ok())
-        .ok_or_else(|| format!("bad tab id {tab_id:?}, want tab-<n>"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -779,8 +884,33 @@ mod tests {
     #[test]
     fn tab_id_roundtrip() {
         assert_eq!(tab_id_for_index(0), "tab-0");
-        assert_eq!(parse_tab_index("tab-7").unwrap(), 7);
-        assert!(parse_tab_index("window-3").is_err());
+        assert_eq!(tab_id_for_index(7), "tab-7");
+    }
+
+    #[test]
+    fn window_id_validation() {
+        assert!(is_window_id("@0"));
+        assert!(is_window_id("@42"));
+        // Reject anything that isn't `@<digits>` so it can't smuggle a tmux flag
+        // or a stale index-style target into the kill argv.
+        assert!(!is_window_id("@"));
+        assert!(!is_window_id("0"));
+        assert!(!is_window_id("tab-1"));
+        assert!(!is_window_id("cockpit-main:1"));
+        assert!(!is_window_id("@1 -k"));
+        assert!(!is_window_id("@-1"));
+        assert!(!is_window_id(""));
+    }
+
+    #[test]
+    fn missing_target_is_idempotent_close() {
+        // The exact tmux stderr the close used to choke on — now a no-op success.
+        assert!(is_missing_target("can't find window: 1"));
+        assert!(is_missing_target("can't find pane %9"));
+        assert!(is_missing_target("can't find window @7"));
+        // A real failure (e.g. server gone) must still propagate.
+        assert!(!is_missing_target("no server running on /tmp/tmux/cockpit"));
+        assert!(!is_missing_target("server exited unexpectedly"));
     }
 
     #[test]

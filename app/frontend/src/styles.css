@@ -160,6 +160,43 @@ button {
   outline: none;
 }
 
+/* ── Git badge (dev#2) — branch + dirty dot + ahead/behind on a tab chip ─── */
+.git-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  max-width: 130px;
+  padding: 0 5px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-1);
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1;
+}
+.tab-chip.active .git-badge {
+  border-color: var(--border-strong);
+}
+.git-branch {
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-dirty {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: #f59e0b; /* amber = uncommitted changes */
+}
+.git-ab {
+  color: var(--fg-faint);
+}
+
 .tab-close {
   display: flex;
   align-items: center;
@@ -1267,4 +1304,302 @@ button {
 .btn-primary:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* ── File-tree sidebar (v1.1) ────────────────────────────────────────────────
+ * Docked LEFT column. The app body becomes [sidebar | main-col]; the main column
+ * keeps the old TabBar / PaneGrid / footer stack. Toggling/hiding the sidebar
+ * shrinks the pane grid, which re-fits xterm + re-syncs (the resync path). */
+
+.app-body {
+  display: flex;
+  flex-direction: row;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.main-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ft-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  width: 240px;
+  min-width: 160px;
+  min-height: 0;
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
+  user-select: none;
+}
+
+.ft-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.ft-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+}
+.ft-spacer {
+  flex: 1 1 auto;
+}
+.ft-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.ft-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.ft-icon-on {
+  color: var(--focus);
+}
+
+.ft-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  height: 22px;
+  padding: 0 10px;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.ft-crumb-home {
+  color: var(--fg-dim);
+}
+.ft-crumb-sep {
+  color: var(--fg-faint);
+}
+.ft-crumb {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ft-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+}
+
+.ft-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding-right: 8px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  cursor: default;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ft-row:hover {
+  background: var(--bg-hover);
+}
+.ft-row-dir {
+  color: var(--fg);
+  cursor: pointer;
+}
+.ft-twist {
+  flex: 0 0 auto;
+  width: 10px;
+  text-align: center;
+  color: var(--fg-faint);
+  font-size: 9px;
+}
+.ft-glyph {
+  flex: 0 0 auto;
+  width: 10px;
+  text-align: center;
+  color: var(--fg-faint);
+  font-size: 9px;
+}
+.ft-row-dir .ft-glyph {
+  color: var(--focus);
+}
+.ft-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ft-empty {
+  padding: 12px 10px;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.ft-error {
+  color: #fca5a5;
+}
+
+.ft-footer {
+  flex: 0 0 auto;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 10px;
+  color: var(--fg-faint);
+  border-top: 1px solid var(--border);
+}
+
+/* Inline new-file/folder input row. */
+.ft-newrow {
+  cursor: text;
+}
+.ft-new-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-1);
+  border: 1px solid var(--focus);
+  border-radius: 3px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 0 4px;
+  height: 18px;
+  outline: none;
+}
+
+/* Right-click context menu (fixed at the cursor over a full-window backdrop). */
+.ft-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+.ft-menu {
+  position: fixed;
+  z-index: 91;
+  min-width: 180px;
+  max-width: 260px;
+  padding: 4px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+.ft-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ft-menu-item:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.ft-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+.ft-menu-sub {
+  justify-content: space-between;
+}
+.ft-menu-caret {
+  color: var(--fg-faint);
+  font-size: 9px;
+}
+.ft-menu-item:hover .ft-menu-caret {
+  color: #fff;
+}
+.ft-menu-agent {
+  padding-left: 20px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-family: var(--mono);
+}
+.ft-menu-empty {
+  padding: 4px 8px 4px 20px;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.ft-menu-danger {
+  color: #fca5a5;
+}
+.ft-menu-danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* Delete confirm modal (centered overlay). */
+.ft-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+.ft-modal {
+  width: 320px;
+  max-width: 90vw;
+  padding: 16px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+}
+.ft-modal-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--fg);
+  margin-bottom: 8px;
+}
+.ft-modal-body {
+  font-size: 12px;
+  color: var(--fg-dim);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+.ft-modal-name {
+  color: var(--fg);
+  font-family: var(--mono);
+}
+.ft-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

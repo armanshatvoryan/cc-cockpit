@@ -12,8 +12,11 @@
 //! The IPC contract this exposes is documented in the final report; command
 //! names + payloads are stable for the frontend to build against.
 
+pub mod filetree;
+pub mod gitstatus;
 pub mod inventory;
 pub mod manager;
+pub mod persist;
 pub mod status;
 pub mod teamruns;
 pub mod templates;
@@ -145,17 +148,30 @@ fn create_tab(
     state: State<'_, AppState>,
     name: Option<String>,
 ) -> Result<CreateTabResult, String> {
-    with_reconnect(&app, &state, |mgr| mgr.create_tab(name.as_deref()))
+    // `create_tab_healing` adds a window when the session is alive, but when the
+    // session was destroyed (user closed the last tab) it re-creates + re-attaches
+    // and ADOPTS the lone bootstrap window — so one ⌘T from the empty state yields
+    // exactly one tab, not two. A re-attach returns a fresh Outbound stream; rebind
+    // the forwarder + notify the UI, same as `with_reconnect`.
+    let (tab, new_rx) = {
+        let mut mgr = state.mgr.lock().unwrap();
+        mgr.create_tab_healing(name.as_deref())?
+    };
+    if let Some(rx) = new_rx {
+        spawn_forwarder(app.clone(), rx);
+        let _ = app.emit("cockpit:reconnected", ());
+    }
+    Ok(tab)
 }
 
 #[tauri::command]
 fn close_tab(
     app: AppHandle,
     state: State<'_, AppState>,
-    tab_id: String,
+    window_id: String,
     force: bool,
 ) -> Result<CloseTabResult, String> {
-    with_reconnect(&app, &state, |mgr| mgr.close_tab(&tab_id, force))
+    with_reconnect(&app, &state, |mgr| mgr.close_tab(&window_id, force))
 }
 
 #[tauri::command]
@@ -255,6 +271,20 @@ fn warm_start(state: State<'_, AppState>, pane_id: String) -> Result<WarmStartPa
     Ok(WarmStartPayload { bytes_b64 })
 }
 
+/// Visible-screen-only replay for the post-resize re-sync (no scrollback). A
+/// shell leaves a trail of redrawn prompts in scrollback on resize; replaying the
+/// full history surfaces that garble. The visible grid is clean (= what Ctrl+L
+/// shows), so the re-sync replays just that.
+#[tauri::command]
+fn warm_start_screen(
+    state: State<'_, AppState>,
+    pane_id: String,
+) -> Result<WarmStartPayload, String> {
+    let mgr = state.mgr.lock().unwrap();
+    let bytes_b64 = mgr.warm_start_screen(&pane_id)?;
+    Ok(WarmStartPayload { bytes_b64 })
+}
+
 /// Inventory mission-control (P2-F1): the unified read-only browser of skills,
 /// subagents, plugins, and MCP servers across the global `~/.claude` scope and
 /// (when `project_path` is the active tab's cwd) the per-project `.claude/`
@@ -322,6 +352,69 @@ fn spinup_preview(
     task: String,
 ) -> Result<templates::SpinupPreview, String> {
     templates::spinup_preview(project_path.as_deref(), &roster_id, &workflow_id, &task)
+}
+
+/// File-tree sidebar (v1.1): the immediate children of one directory, filtered
+/// (.gitignore always; dotfiles hidden unless `show_hidden`) and sorted
+/// dirs-first. The tree expands lazily — one call per opened folder. Pure read.
+#[tauri::command]
+fn list_dir(path: String, show_hidden: bool) -> Result<Vec<filetree::FileEntry>, String> {
+    filetree::list_dir(&path, show_hidden)
+}
+
+/// File-tree root probe (v1.1): a tmux pane's current working dir. The tree
+/// follows the active pane — re-roots here when the active tab/pane changes or a
+/// shell pane `cd`s. `pane_id` is validated to `%<n>` at the boundary.
+#[tauri::command]
+fn pane_cwd(pane_id: String) -> Result<String, String> {
+    filetree::active_pane_cwd(&pane_id)
+}
+
+/// File-tree (v1.1): a pane's current command, so a double-click / Attach-to-Agent
+/// can pick the insert format (claude → `@path`, shell → raw path).
+#[tauri::command]
+fn pane_command(pane_id: String) -> Result<String, String> {
+    filetree::pane_command(&pane_id)
+}
+
+/// File-tree right-click "Reveal in Finder" (v1.1): `open -R <path>`. Path passed
+/// as its own argv element (no shell); existence verified first.
+#[tauri::command]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    filetree::reveal_in_finder(&path)
+}
+
+/// File-tree New File / New Folder (v1.1): create `name` under `parent`. `name`
+/// is validated to a single safe path segment (no traversal); never clobbers.
+#[tauri::command]
+fn create_entry(parent: String, name: String, is_dir: bool) -> Result<String, String> {
+    filetree::create_entry(&parent, &name, is_dir)
+}
+
+/// File-tree Delete (v1.1): move a path to the macOS Trash (recoverable) — never
+/// an unlink. Existence verified first.
+#[tauri::command]
+fn trash_path(path: String) -> Result<(), String> {
+    filetree::trash_path(&path)
+}
+
+/// File-tree live watch (v1.1): set the exact dirs watched for changes (the
+/// sidebar root + expanded folders), each non-recursive. Emits `filetree:changed`
+/// on any change; an empty list unwatches everything (sidebar hidden).
+#[tauri::command]
+fn watch_dirs(app: AppHandle, dirs: Vec<String>) -> Result<(), String> {
+    filetree::set_watched(&app, dirs)
+}
+
+/// "Send pane → new tab" (v1.1): break a pane out into its own new window/tab,
+/// keeping it running. Returns the new window id so the frontend can switch to it.
+#[tauri::command]
+fn break_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: String,
+) -> Result<String, String> {
+    with_reconnect(&app, &state, |mgr| mgr.break_pane(&pane_id))
 }
 
 // ── Background tasks ─────────────────────────────────────────────────────────
@@ -484,6 +577,7 @@ pub fn run() {
             interrupt_pane,
             list_state,
             warm_start,
+            warm_start_screen,
             load_inventory,
             toggle_plugin,
             plugin_toggle_preview,
@@ -491,6 +585,17 @@ pub fn run() {
             load_cockpit_templates,
             load_team_runs,
             spinup_preview,
+            list_dir,
+            pane_cwd,
+            pane_command,
+            reveal_in_finder,
+            create_entry,
+            trash_path,
+            watch_dirs,
+            break_pane,
+            persist::save_layout,
+            persist::load_layout,
+            gitstatus::git_status_snapshot,
         ])
         .on_window_event(|window, event| {
             // ⌘W (and the red close button) fire CloseRequested, which would close
