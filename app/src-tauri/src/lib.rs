@@ -577,8 +577,48 @@ fn spawn_status_poller(app: AppHandle, mgr: Arc<Mutex<SessionManager>>) {
     });
 }
 
+/// Apps launched from Finder/launchd inherit a stripped PATH (e.g.
+/// `/usr/local/bin:/bin:/usr/bin` — no `/opt/homebrew/bin`), so every bare
+/// `Command::new("tmux"|"git"|"zsh"|"open")` spawn fails with "No such file or
+/// directory (os error 2)". Pull the real PATH from the user's login shell once
+/// at startup and install it into this process's environment so all children
+/// inherit it. A terminal/dev launch already has a full PATH, so the probe just
+/// re-sets the same value (harmless). Edition 2021 → `set_var` is safe; this runs
+/// before any thread/child is spawned.
+fn repair_path_for_gui() {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    // Sentinel-wrap the value so rc-file stdout noise can't corrupt the capture.
+    if let Ok(out) = std::process::Command::new(&shell)
+        .args(["-ilc", "printf '__CCPATH__%s__CCEND__' \"$PATH\""])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if let (Some(a), Some(b)) = (s.find("__CCPATH__"), s.find("__CCEND__")) {
+                let path = &s[a + "__CCPATH__".len()..b];
+                if !path.is_empty() {
+                    std::env::set_var("PATH", path);
+                    return;
+                }
+            }
+        }
+    }
+    // Login-shell probe failed/empty: widen PATH with the usual Homebrew dirs so
+    // spawns still resolve rather than leaving the stripped GUI PATH untouched.
+    let cur = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<String> =
+        cur.split(':').filter(|s| !s.is_empty()).map(String::from).collect();
+    for d in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        if !parts.iter().any(|p| p == d) {
+            parts.push(d.to_string());
+        }
+    }
+    std::env::set_var("PATH", parts.join(":"));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    repair_path_for_gui();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
