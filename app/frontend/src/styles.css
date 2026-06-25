@@ -1393,16 +1393,101 @@ button {
   flex: 0 0 auto;
   white-space: nowrap;
 }
-.ft-crumb-home {
-  color: var(--fg-dim);
-}
 .ft-crumb-sep {
   color: var(--fg-faint);
+  flex: 0 0 auto;
 }
+.ft-crumb-ellipsis {
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+}
+/* Crumbs are buttons now (click = cd the active pane there). Reset the native
+   button chrome, keep the old quiet look, light up on hover. */
 .ft-crumb {
+  border: none;
+  background: transparent;
+  padding: 1px 3px;
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
   color: var(--fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+}
+.ft-crumb:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.ft-crumb-home {
+  flex: 0 0 auto;
+}
+
+/* ── Repo picker (header dropdown) ─────────────────────────────────────────── */
+.ft-repo {
+  position: relative;
+  flex: 0 0 auto;
+}
+.ft-repo-btn {
+  width: auto;
+  padding: 0 6px;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.ft-repo-menu {
+  position: absolute;
+  top: 26px;
+  left: 0;
+  z-index: 91;
+  min-width: 200px;
+  max-width: 320px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+.ft-repo-section {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  padding: 5px 8px 2px;
+}
+.ft-repo-item {
+  overflow: hidden;
+}
+.ft-repo-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ft-repo-path {
+  margin-left: auto;
+  padding-left: 10px;
+  font-size: 10px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl; /* keep the meaningful tail (…/repo) when it overflows */
+}
+.ft-menu-item:hover .ft-repo-path {
+  color: rgba(255, 255, 255, 0.7);
+}
+.ft-repo-dot {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--fg-faint);
+}
+.ft-repo-dot-on {
+  color: var(--focus);
 }
 
 .ft-body {

@@ -16,9 +16,11 @@ import {
   fileTree,
   ftExpanded,
   ftShowHidden,
+  ftHideIgnored,
   ftRootEntries,
   ftToggleExpand,
   ftToggleHidden,
+  ftToggleHideIgnored,
   ftRefresh,
   ftInsertIntoActivePane,
   ftOpenMenu,
@@ -38,12 +40,32 @@ import {
   ftConfirmDelete,
   ftLiveAgents,
   ftAttachToAgent,
+  ftCdActivePane,
+  ftHome,
+  ftRecents,
+  ftRepos,
+  ftLoadRepos,
 } from "../store";
 
-/** Breadcrumb segments from the root path: `Home › … › <last two dirs>`. */
-function crumbs(root: string): string[] {
+/** Clickable breadcrumb segments for `root`, each carrying the cumulative abs
+ *  path it cd's to. Rooted below `$HOME` when `root` is under it (so labels read
+ *  `Workflows › cc-cockpit › app`, not the full `/Users/…` chain); otherwise
+ *  absolute from `/`. */
+function crumbSegs(root: string, home: string): { label: string; path: string }[] {
   if (!root) return [];
-  return root.split("/").filter(Boolean).slice(-2);
+  let rel = root;
+  let base = "";
+  if (home && (root === home || root.startsWith(home + "/"))) {
+    rel = root.slice(home.length); // "" (at home) or "/a/b"
+    base = home;
+  }
+  const segs: { label: string; path: string }[] = [];
+  let acc = base;
+  for (const p of rel.split("/").filter(Boolean)) {
+    acc = acc + "/" + p;
+    segs.push({ label: p, path: acc });
+  }
+  return segs;
 }
 
 /** The dir a new-entry / context action targets: a folder itself, else a file's
@@ -97,7 +119,9 @@ const TreeNode: Component<{ entry: FileEntry; depth: number }> = (props) => {
         style={{ "padding-left": `${props.depth * 12 + 8}px` }}
         title={e.path}
         onClick={() => e.isDir && ftToggleExpand(e.path)}
-        onDblClick={() => void ftInsertIntoActivePane(e)}
+        onDblClick={() =>
+          e.isDir ? void ftCdActivePane(e.path) : void ftInsertIntoActivePane(e)
+        }
         onContextMenu={(ev) => {
           ev.preventDefault();
           ftOpenMenu(e, ev.clientX, ev.clientY);
@@ -212,11 +236,122 @@ const DeleteModal: Component = () => {
   );
 };
 
+/** Last path segment (for recent-root labels). */
+function baseNameOf(p: string): string {
+  const parts = p.replace(/\/+$/, "").split("/");
+  return parts[parts.length - 1] || p;
+}
+
+/** Clickable breadcrumb: Home + (… if truncated) + the last 3 segments. Each
+ *  click cd's the active pane to that ancestor. Width-bounded — deeper jumps go
+ *  through the repo picker / recents. */
+const Breadcrumb: Component = () => {
+  const segs = () => crumbSegs(fileTree.root, ftHome());
+  const shown = () => segs().slice(-3);
+  const truncated = () => segs().length > shown().length;
+  const homePath = () => ftHome() || "/";
+  return (
+    <div class="ft-breadcrumb" title={fileTree.root}>
+      <button
+        class="ft-crumb ft-crumb-home"
+        title={`cd ${homePath()}`}
+        onClick={() => void ftCdActivePane(homePath())}
+      >
+        Home
+      </button>
+      <Show when={truncated()}>
+        <span class="ft-crumb-sep">›</span>
+        <span class="ft-crumb-ellipsis">…</span>
+      </Show>
+      <For each={shown()}>
+        {(seg) => (
+          <>
+            <span class="ft-crumb-sep">›</span>
+            <button
+              class="ft-crumb"
+              title={`cd ${seg.path}`}
+              onClick={() => void ftCdActivePane(seg.path)}
+            >
+              {seg.label}
+            </button>
+          </>
+        )}
+      </For>
+    </div>
+  );
+};
+
+/** Header repo-picker: a dropdown of recently-visited roots + sibling project
+ *  dirs (discovered when it opens). A pick cd's the active pane there. Filled
+ *  dot = a git repo, hollow = a plain project dir. */
+const RepoPicker: Component = () => {
+  const [open, setOpen] = createSignal(false);
+  const toggle = () => {
+    const next = !open();
+    setOpen(next);
+    if (next) void ftLoadRepos();
+  };
+  const pick = (path: string) => {
+    setOpen(false);
+    void ftCdActivePane(path);
+  };
+  return (
+    <div class="ft-repo">
+      <button
+        class="ft-icon-btn ft-repo-btn"
+        classList={{ "ft-icon-on": open() }}
+        title="Jump to a repo"
+        aria-label="Repo picker"
+        onClick={toggle}
+      >
+        ▾ repos
+      </button>
+      <Show when={open()}>
+        <div class="ft-menu-backdrop" onClick={() => setOpen(false)} />
+        <div class="ft-repo-menu">
+          <Show when={ftRecents().length > 0}>
+            <div class="ft-repo-section">recent</div>
+            <For each={ftRecents()}>
+              {(p) => (
+                <button class="ft-menu-item ft-repo-item" title={p} onClick={() => pick(p)}>
+                  <span class="ft-repo-name">{baseNameOf(p)}</span>
+                  <span class="ft-repo-path">{p}</span>
+                </button>
+              )}
+            </For>
+            <div class="ft-menu-sep" />
+          </Show>
+          <div class="ft-repo-section">repos</div>
+          <Show
+            when={ftRepos().length > 0}
+            fallback={<div class="ft-menu-empty">no sibling repos</div>}
+          >
+            <For each={ftRepos()}>
+              {(r) => (
+                <button class="ft-menu-item ft-repo-item" title={r.path} onClick={() => pick(r.path)}>
+                  <span
+                    class="ft-repo-dot"
+                    classList={{ "ft-repo-dot-on": r.isRepo }}
+                  >
+                    {r.isRepo ? "●" : "○"}
+                  </span>
+                  <span class="ft-repo-name">{r.name}</span>
+                </button>
+              )}
+            </For>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+};
+
 export const FileTreePanel: Component = () => {
   return (
     <aside class="ft-panel" aria-label="File tree">
       <header class="ft-header">
         <span class="ft-title">FILES</span>
+        <RepoPicker />
         <span class="ft-spacer" />
         <button class="ft-icon-btn" title="New File" aria-label="New file" onClick={() => ftBeginNew(false)}>
           ＋
@@ -233,22 +368,21 @@ export const FileTreePanel: Component = () => {
         >
           ⚙
         </button>
+        <button
+          class="ft-icon-btn"
+          classList={{ "ft-icon-on": ftHideIgnored() }}
+          title={ftHideIgnored() ? "Show .gitignored" : "Hide .gitignored"}
+          aria-label="Toggle gitignored"
+          onClick={() => ftToggleHideIgnored()}
+        >
+          ⊘
+        </button>
         <button class="ft-icon-btn" title="Refresh" aria-label="Refresh" onClick={() => ftRefresh()}>
           ⟳
         </button>
       </header>
 
-      <div class="ft-breadcrumb" title={fileTree.root}>
-        <span class="ft-crumb-home">Home</span>
-        <For each={crumbs(fileTree.root)}>
-          {(seg) => (
-            <>
-              <span class="ft-crumb-sep">›</span>
-              <span class="ft-crumb">{seg}</span>
-            </>
-          )}
-        </For>
-      </div>
+      <Breadcrumb />
 
       <div class="ft-body">
         <Show when={ftNewEntry()?.parent === fileTree.root}>

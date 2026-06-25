@@ -355,11 +355,16 @@ fn spinup_preview(
 }
 
 /// File-tree sidebar (v1.1): the immediate children of one directory, filtered
-/// (.gitignore always; dotfiles hidden unless `show_hidden`) and sorted
-/// dirs-first. The tree expands lazily — one call per opened folder. Pure read.
+/// (build-junk denylist always; dotfiles hidden unless `show_hidden`; `.gitignore`
+/// honored only when `hide_ignored`) and sorted dirs-first. The tree expands
+/// lazily — one call per opened folder. Pure read.
 #[tauri::command]
-fn list_dir(path: String, show_hidden: bool) -> Result<Vec<filetree::FileEntry>, String> {
-    filetree::list_dir(&path, show_hidden)
+fn list_dir(
+    path: String,
+    show_hidden: bool,
+    hide_ignored: bool,
+) -> Result<Vec<filetree::FileEntry>, String> {
+    filetree::list_dir(&path, show_hidden, hide_ignored)
 }
 
 /// File-tree root probe (v1.1): a tmux pane's current working dir. The tree
@@ -375,6 +380,21 @@ fn pane_cwd(pane_id: String) -> Result<String, String> {
 #[tauri::command]
 fn pane_command(pane_id: String) -> Result<String, String> {
     filetree::pane_command(&pane_id)
+}
+
+/// File-tree (v1.1 cd-nav): the user's `$HOME`. The "Home" breadcrumb cd's here
+/// and breadcrumb labels are rooted below it. Pure env read.
+#[tauri::command]
+fn home_dir() -> String {
+    filetree::home_dir()
+}
+
+/// File-tree repo-picker (v1.1 cd-nav): sibling project dirs to jump between,
+/// anchored on the workspace (walk to the enclosing git repo, list its parent's
+/// children). fs-reads only — no `git`, no shell.
+#[tauri::command]
+fn discover_repos(from_dir: String) -> Result<Vec<filetree::RepoEntry>, String> {
+    filetree::discover_repos(&from_dir)
 }
 
 /// File-tree right-click "Reveal in Finder" (v1.1): `open -R <path>`. Path passed
@@ -588,6 +608,8 @@ pub fn run() {
             list_dir,
             pane_cwd,
             pane_command,
+            home_dir,
+            discover_repos,
             reveal_in_finder,
             create_entry,
             trash_path,

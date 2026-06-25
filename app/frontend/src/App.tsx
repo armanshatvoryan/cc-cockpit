@@ -12,6 +12,7 @@ import {
   newTab,
   clearError,
   sidebarVisible,
+  ftInitHome,
 } from "./store";
 import { installKeyboard } from "./keyboard";
 import { TabBar } from "./components/TabBar";
@@ -24,6 +25,7 @@ import { SpinupDialog } from "./components/SpinupDialog";
 export const App: Component = () => {
   onMount(() => {
     void bootCockpit();
+    void ftInitHome(); // resolve $HOME for the file-tree breadcrumb (cd-nav)
     installKeyboard();
   });
   onCleanup(() => shutdownCockpit());
