@@ -518,6 +518,13 @@ impl SessionManager {
             .map_err(|e| e.to_string())
     }
 
+    /// Public entry to type a full command line + Enter atomically (one control-
+    /// client round-trip). Used by the file-tree `cd` so the line and its CR can't
+    /// be split into two racy IPC calls.
+    pub fn pane_run_line(&mut self, pane_id: &str, line: &str) -> Result<(), String> {
+        self.run_line_in_pane(pane_id, line)
+    }
+
     // ── F5: raw IO ───────────────────────────────────────────────────────────
 
     pub fn pane_send_keys(&mut self, pane_id: &str, data: &str) -> Result<(), String> {

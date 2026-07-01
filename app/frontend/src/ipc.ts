@@ -348,6 +348,12 @@ export function paneSendKeys(paneId: string, data: string): void {
   );
 }
 
+/** Type a full command line + Enter into a pane atomically (one backend command,
+ *  single lock) — used by the file-tree `cd` so the line and its CR can't race. */
+export function paneRunLine(paneId: string, line: string): Promise<void> {
+  return invoke<void>("pane_run_line", { paneId, line });
+}
+
 /** Push the xterm-fit cols/rows to tmux (authoritative resize). */
 export function paneResize(paneId: string, cols: number, rows: number): Promise<void> {
   return invoke<void>("pane_resize", { paneId, cols, rows });
@@ -488,12 +494,17 @@ export function loadLayout(): Promise<LayoutSnapshot | null> {
 
 /**
  * File-tree sidebar (v1.1): the immediate children of one directory (lazy — one
- * call per opened folder). `.gitignore` is always honored and dotfiles are hidden
- * unless `showHidden`, so node_modules/target/.git never reach the tree. Sorted
- * dirs-first, then case-insensitively.
+ * call per opened folder). A build-junk denylist (node_modules/target/.git/…) is
+ * always dropped; dotfiles are hidden unless `showHidden`; `.gitignore` is honored
+ * only when `hideIgnored` (off by default, so gitignored sub-repos still show).
+ * Sorted dirs-first, then case-insensitively.
  */
-export function listDir(path: string, showHidden: boolean): Promise<FileEntry[]> {
-  return invoke<FileEntry[]>("list_dir", { path, showHidden });
+export function listDir(
+  path: string,
+  showHidden: boolean,
+  hideIgnored: boolean,
+): Promise<FileEntry[]> {
+  return invoke<FileEntry[]>("list_dir", { path, showHidden, hideIgnored });
 }
 
 /**
@@ -509,6 +520,27 @@ export function paneCwd(paneId: string): Promise<string> {
  *  (claude → `@path` mention, shell → raw path). */
 export function paneCommand(paneId: string): Promise<string> {
   return invoke<string>("pane_command", { paneId });
+}
+
+/** The user's home dir — the "Home" breadcrumb cd's here and crumb labels root
+ *  below it. */
+export function homeDir(): Promise<string> {
+  return invoke<string>("home_dir");
+}
+
+/** One sibling project in the repo-picker dropdown. */
+export interface RepoEntry {
+  name: string;
+  path: string;
+  /** Contains a `.git`? (Marked in the picker; plain project dirs are listed too.) */
+  isRepo: boolean;
+}
+
+/** Sibling project dirs to jump between (repo-picker). Anchored on the workspace
+ *  (walk to the enclosing git repo, list its parent's children) — not a $HOME
+ *  sweep. Backend does fs-reads only. */
+export function discoverRepos(fromDir: string): Promise<RepoEntry[]> {
+  return invoke<RepoEntry[]>("discover_repos", { fromDir });
 }
 
 /** Right-click "Reveal in Finder" → `open -R <path>` (existence verified). */

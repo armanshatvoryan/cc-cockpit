@@ -1,7 +1,7 @@
 {
   "name": "cc-cockpit-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "CC Cockpit frontend (SolidJS + xterm). Placeholder scaffold — the frontend-agent fills this in against the backend IPC contract.",
   "scripts": {

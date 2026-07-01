@@ -31,9 +31,12 @@ import {
   launchAgent,
   launchShell,
   paneSendKeys,
+  paneRunLine,
   listDir,
   paneCwd,
   paneCommand,
+  homeDir,
+  discoverRepos,
   revealInFinder,
   createEntry,
   trashPath,
@@ -61,6 +64,7 @@ import {
   type LayoutSnapshot,
   type TabLayout,
   type FileEntry,
+  type RepoEntry,
 } from "./ipc";
 
 interface CockpitStore extends CockpitState {
@@ -1024,9 +1028,12 @@ const [fileTree, setFileTree] = createStore<FileTreeStore>({
 const [sidebarVisible, setSidebarVisible] = createSignal(true);
 /** Which folders are expanded (keyed by abs path). */
 const [ftExpanded, setFtExpanded] = createStore<Record<string, boolean>>({});
-/** Show dotfiles? (⚙ toggle). `.gitignore` filtering is independent + always on. */
+/** Show dotfiles? (⚙ toggle). Independent of the gitignore toggle below. */
 const [ftShowHidden, setFtShowHidden] = createSignal(false);
-export { fileTree, sidebarVisible, ftExpanded, ftShowHidden };
+/** Hide .gitignored entries? (⊘ toggle). OFF by default — the tree shows all
+ *  projects (incl. gitignored sub-repos); ON re-applies .gitignore to declutter. */
+const [ftHideIgnored, setFtHideIgnored] = createSignal(false);
+export { fileTree, sidebarVisible, ftExpanded, ftShowHidden, ftHideIgnored };
 
 /** Children of the current root (the top level the tree renders). */
 export function ftRootEntries(): FileEntry[] {
@@ -1039,7 +1046,7 @@ export async function ftLoadDir(path: string): Promise<void> {
   if (!path) return;
   setFileTree("loading", path, true);
   try {
-    const entries = await listDir(path, ftShowHidden());
+    const entries = await listDir(path, ftShowHidden(), ftHideIgnored());
     setFileTree("entries", path, entries);
     setFileTree("error", null);
   } catch (e) {
@@ -1071,6 +1078,12 @@ export function toggleSidebar(): void {
   setSidebarVisible((v) => !v);
   if (sidebarVisible()) void syncFileTreeRoot();
   ftSyncWatched(); // watch the visible set, or clear it when hidden
+}
+
+/** Flip hide-.gitignored and re-list every cached dir so the filter re-applies. */
+export function ftToggleHideIgnored(): void {
+  setFtHideIgnored((v) => !v);
+  for (const dir of Object.keys(fileTree.entries)) void ftLoadDir(dir);
 }
 
 /** Flip show-dotfiles and re-list every cached dir so the filter re-applies. */
@@ -1183,6 +1196,89 @@ export async function ftRevealInFinder(path: string): Promise<void> {
   } catch (e) {
     setStore("error", `reveal failed: ${String(e)}`);
   }
+}
+
+// ── cd navigation (v1.1 cd-nav): drive the active pane from the tree ───────────
+// The sidebar stops being one-way: a double-click on a folder, a breadcrumb
+// segment, or a repo pick all `cd` the ACTIVE pane. We only type `cd` into a
+// recognized SHELL — a claude REPL / editor / test-runner would mis-eat the
+// keystrokes — so anything else falls back to opening the dir in a NEW tab.
+
+/** $HOME, resolved once on boot (the "Home" breadcrumb cd's here). */
+const [ftHome, setFtHome] = createSignal<string>("");
+export { ftHome };
+export async function ftInitHome(): Promise<void> {
+  try {
+    setFtHome(await homeDir());
+  } catch {
+    /* leave empty — breadcrumb falls back to absolute segments from "/" */
+  }
+}
+
+/** Roots visited via a click this session (most-recent first), for the picker. */
+const [ftRecents, setFtRecents] = createSignal<string[]>([]);
+export { ftRecents };
+function pushRecent(path: string): void {
+  setFtRecents((r) => [path, ...r.filter((p) => p !== path)].slice(0, 8));
+}
+
+/** Sibling project dirs for the repo picker (refreshed when it opens). */
+const [ftRepos, setFtRepos] = createSignal<RepoEntry[]>([]);
+export { ftRepos };
+export async function ftLoadRepos(): Promise<void> {
+  const from = fileTree.root;
+  if (!from) {
+    setFtRepos([]);
+    return;
+  }
+  try {
+    setFtRepos(await discoverRepos(from));
+  } catch {
+    setFtRepos([]);
+  }
+}
+
+// `pane_current_command` reports a basename like `zsh`, `-zsh` (login), `bash`,
+// `claude`, `node`, `vim`. cd is only safe to type into an actual shell.
+const SHELLS = new Set([
+  "zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh",
+]);
+function isShellCommand(cmd: string): boolean {
+  const c = cmd.trim().toLowerCase().replace(/^-/, ""); // strip login-shell dash
+  return SHELLS.has(c);
+}
+
+/** cd the active pane into `dir`. Shell pane → `cd <quoted>` + Enter, then a
+ *  snappy proactive re-root (the cwd poll would catch up anyway) and remember the
+ *  dir as a recent. NON-shell pane (claude/editor/runner) → don't type into it;
+ *  open the dir in a new terminal tab instead. Shared by folder-dblclick,
+ *  breadcrumb segments, and the repo picker. */
+export async function ftCdActivePane(dir: string): Promise<void> {
+  if (!dir) return;
+  const pid = focusedPaneId();
+  if (!pid) {
+    // No active pane — open a fresh terminal there.
+    await ftOpenInTerminal({ name: baseName(dir), path: dir, isDir: true });
+    return;
+  }
+  let cmd = "";
+  try {
+    cmd = await paneCommand(pid);
+  } catch {
+    /* unknown command — treat as non-shell, fall back to a new tab */
+  }
+  if (!isShellCommand(cmd)) {
+    await ftOpenInTerminal({ name: baseName(dir), path: dir, isDir: true });
+    return;
+  }
+  // Fire-and-forget, but self-catch: paneRunLine returns a raw Promise (unlike
+  // the old self-catching paneSendKeys), so an un-caught rejection on a failed cd
+  // would surface as an unhandled promise rejection. Log and move on.
+  void paneRunLine(pid, `cd ${shellQuoteIfNeeded(dir)}`).catch((e) =>
+    console.warn("pane_run_line (cd) failed", e),
+  );
+  pushRecent(dir);
+  ftSetRoot(dir); // snappy re-root; syncFileTreeRoot would also catch it
 }
 
 async function copyText(t: string): Promise<void> {

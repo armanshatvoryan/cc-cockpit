@@ -10,7 +10,7 @@ members = ["crates/control-mode", "crates/engine"]
 
 [package]
 name = "cc-cockpit"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "CC Cockpit — desktop-over-tmux multitask cockpit (v1 backbone)."
 # Two binaries exist (the GUI app `cc-cockpit` from src/main.rs, and the headless
