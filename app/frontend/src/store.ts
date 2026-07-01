@@ -1271,7 +1271,12 @@ export async function ftCdActivePane(dir: string): Promise<void> {
     await ftOpenInTerminal({ name: baseName(dir), path: dir, isDir: true });
     return;
   }
-  void paneRunLine(pid, `cd ${shellQuoteIfNeeded(dir)}`);
+  // Fire-and-forget, but self-catch: paneRunLine returns a raw Promise (unlike
+  // the old self-catching paneSendKeys), so an un-caught rejection on a failed cd
+  // would surface as an unhandled promise rejection. Log and move on.
+  void paneRunLine(pid, `cd ${shellQuoteIfNeeded(dir)}`).catch((e) =>
+    console.warn("pane_run_line (cd) failed", e),
+  );
   pushRecent(dir);
   ftSetRoot(dir); // snappy re-root; syncFileTreeRoot would also catch it
 }
