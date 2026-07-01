@@ -632,9 +632,13 @@ fn capture_login_path(shell: &str) -> Option<String> {
     });
 
     let captured = rx.recv_timeout(Duration::from_secs(5)).ok();
-    // Reap regardless: on timeout kill the hung shell; on success it has exited.
+    // Reap without blocking the main thread: on a D-state hang SIGKILL may not be
+    // acted on immediately, so a blocking wait() here would defeat the 5s bound.
+    // Kill, then let a detached thread reap the zombie in the background.
     let _ = child.kill();
-    let _ = child.wait();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 
     parse_path_capture(&captured?)
 }
