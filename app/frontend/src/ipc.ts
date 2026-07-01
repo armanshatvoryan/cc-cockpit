@@ -348,6 +348,12 @@ export function paneSendKeys(paneId: string, data: string): void {
   );
 }
 
+/** Type a full command line + Enter into a pane atomically (one backend command,
+ *  single lock) — used by the file-tree `cd` so the line and its CR can't race. */
+export function paneRunLine(paneId: string, line: string): Promise<void> {
+  return invoke<void>("pane_run_line", { paneId, line });
+}
+
 /** Push the xterm-fit cols/rows to tmux (authoritative resize). */
 export function paneResize(paneId: string, cols: number, rows: number): Promise<void> {
   return invoke<void>("pane_resize", { paneId, cols, rows });

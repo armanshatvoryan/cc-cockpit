@@ -233,6 +233,12 @@ fn pane_send_keys(state: State<'_, AppState>, pane_id: String, data: String) -> 
 }
 
 #[tauri::command]
+fn pane_run_line(state: State<'_, AppState>, pane_id: String, line: String) -> Result<(), String> {
+    let mut mgr = state.mgr.lock().unwrap();
+    mgr.pane_run_line(&pane_id, &line)
+}
+
+#[tauri::command]
 fn pane_resize(state: State<'_, AppState>, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
     let mut mgr = state.mgr.lock().unwrap();
     mgr.pane_resize(&pane_id, cols, rows)
@@ -686,6 +692,7 @@ pub fn run() {
             launch_shell,
             launch_agent,
             pane_send_keys,
+            pane_run_line,
             pane_resize,
             set_grid,
             interrupt_pane,

@@ -31,6 +31,7 @@ import {
   launchAgent,
   launchShell,
   paneSendKeys,
+  paneRunLine,
   listDir,
   paneCwd,
   paneCommand,
@@ -1270,8 +1271,7 @@ export async function ftCdActivePane(dir: string): Promise<void> {
     await ftOpenInTerminal({ name: baseName(dir), path: dir, isDir: true });
     return;
   }
-  paneSendKeys(pid, `cd ${shellQuoteIfNeeded(dir)}`);
-  paneSendKeys(pid, "\r");
+  void paneRunLine(pid, `cd ${shellQuoteIfNeeded(dir)}`);
   pushRecent(dir);
   ftSetRoot(dir); // snappy re-root; syncFileTreeRoot would also catch it
 }
