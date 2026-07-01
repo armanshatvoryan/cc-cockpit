@@ -577,34 +577,84 @@ fn spawn_status_poller(app: AppHandle, mgr: Arc<Mutex<SessionManager>>) {
     });
 }
 
+/// Extract the sentinel-wrapped PATH from the login-shell probe's stdout, and
+/// validate it. Returns `None` (→ caller uses its fallback) when the sentinels
+/// are missing, out of order (guards a reversed-range slice panic), empty, or the
+/// value isn't a plausible PATH. A fish login shell renders a quoted `$PATH`
+/// space-joined (no `:`), which would install one bogus dir — reject anything
+/// that has no `:` and isn't itself an existing directory.
+fn parse_path_capture(stdout: &str) -> Option<String> {
+    const OPEN: &str = "__CCPATH__";
+    let a = stdout.find(OPEN)?;
+    let b = stdout.find("__CCEND__")?;
+    let start = a + OPEN.len();
+    if b <= start {
+        return None; // missing/reversed sentinels — never slice a reversed range
+    }
+    let path = &stdout[start..b];
+    if path.is_empty() {
+        return None;
+    }
+    // A real PATH is colon-separated; the only colon-less value we accept is a
+    // single existing directory (rules out fish's space-joined list).
+    if !path.contains(':') && !std::path::Path::new(path).is_dir() {
+        return None;
+    }
+    Some(path.to_string())
+}
+
+/// Spawn the login-shell PATH probe and read its stdout, but GIVE UP after 5s so
+/// a hung interactive rc (a `read` from the tty, a slow network mount) can never
+/// brick launch. std-only: a reader thread pushes stdout to a channel; the main
+/// thread waits with a timeout, then kills the child regardless. `stdin` is
+/// /dev/null so the shell can't block reading from us.
+fn capture_login_path(shell: &str) -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let mut child = Command::new(shell)
+        // Keep -i: many users set PATH only in interactive ~/.zshrc.
+        .args(["-ilc", "printf '__CCPATH__%s__CCEND__' \"$PATH\""])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let mut out = child.stdout.take()?;
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = out.read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+
+    let captured = rx.recv_timeout(Duration::from_secs(5)).ok();
+    // Reap regardless: on timeout kill the hung shell; on success it has exited.
+    let _ = child.kill();
+    let _ = child.wait();
+
+    parse_path_capture(&captured?)
+}
+
 /// Apps launched from Finder/launchd inherit a stripped PATH (e.g.
 /// `/usr/local/bin:/bin:/usr/bin` — no `/opt/homebrew/bin`), so every bare
 /// `Command::new("tmux"|"git"|"zsh"|"open")` spawn fails with "No such file or
 /// directory (os error 2)". Pull the real PATH from the user's login shell once
-/// at startup and install it into this process's environment so all children
-/// inherit it. A terminal/dev launch already has a full PATH, so the probe just
-/// re-sets the same value (harmless). Edition 2021 → `set_var` is safe; this runs
-/// before any thread/child is spawned.
+/// at startup (bounded + validated) and install it so all children inherit it. A
+/// terminal/dev launch already has a full PATH, so the probe just re-sets the same
+/// value (harmless). Edition 2021 → `set_var` is safe; this runs before any
+/// thread/child of the app proper is spawned.
 fn repair_path_for_gui() {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    // Sentinel-wrap the value so rc-file stdout noise can't corrupt the capture.
-    if let Ok(out) = std::process::Command::new(&shell)
-        .args(["-ilc", "printf '__CCPATH__%s__CCEND__' \"$PATH\""])
-        .output()
-    {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            if let (Some(a), Some(b)) = (s.find("__CCPATH__"), s.find("__CCEND__")) {
-                let path = &s[a + "__CCPATH__".len()..b];
-                if !path.is_empty() {
-                    std::env::set_var("PATH", path);
-                    return;
-                }
-            }
-        }
+    if let Some(path) = capture_login_path(&shell) {
+        std::env::set_var("PATH", path);
+        return;
     }
-    // Login-shell probe failed/empty: widen PATH with the usual Homebrew dirs so
-    // spawns still resolve rather than leaving the stripped GUI PATH untouched.
+    // Probe failed / timed out / invalid: widen PATH with the usual Homebrew dirs
+    // so spawns still resolve rather than leaving the stripped GUI PATH untouched.
     let cur = std::env::var("PATH").unwrap_or_default();
     let mut parts: Vec<String> =
         cur.split(':').filter(|s| !s.is_empty()).map(String::from).collect();
@@ -673,4 +723,41 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_path_capture;
+
+    #[test]
+    fn parse_extracts_between_sentinels() {
+        let s = "rc-noise\n__CCPATH__/opt/homebrew/bin:/usr/bin:/bin__CCEND__";
+        assert_eq!(parse_path_capture(s).as_deref(), Some("/opt/homebrew/bin:/usr/bin:/bin"));
+    }
+
+    #[test]
+    fn parse_rejects_reversed_sentinels_without_panic() {
+        // #5: __CCEND__ before __CCPATH__ must return None, never slice-panic.
+        assert_eq!(parse_path_capture("__CCEND__junk__CCPATH__"), None);
+    }
+
+    #[test]
+    fn parse_rejects_empty_capture() {
+        assert_eq!(parse_path_capture("__CCPATH____CCEND__"), None);
+    }
+
+    #[test]
+    fn parse_rejects_space_joined_fish_path() {
+        // #2: fish quoted $PATH is space-joined (no ':', not a dir) → reject → caller falls back.
+        assert_eq!(parse_path_capture("__CCPATH__/opt/homebrew/bin /usr/bin__CCEND__"), None);
+    }
+
+    #[test]
+    fn parse_accepts_colonless_but_real_single_dir() {
+        // A legit single-entry PATH (rare but valid) that is a real dir passes.
+        let d = std::env::temp_dir();
+        let d = d.to_string_lossy().into_owned();
+        let s = format!("__CCPATH__{d}__CCEND__");
+        assert_eq!(parse_path_capture(&s).as_deref(), Some(d.as_str()));
+    }
 }
