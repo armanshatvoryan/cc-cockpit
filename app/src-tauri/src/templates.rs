@@ -1259,7 +1259,11 @@ mod tests {
         assert!(wf.problems.is_empty(), "example workflow clean: {:?}", wf.problems);
         assert_eq!(wf.name, "ship-it");
         assert_eq!(wf.phases.len(), 4);
-        assert!(wf.lead_hint.as_deref().unwrap().starts_with("You are the team lead."));
+        // The shipped example's lead_hint is the folded ">" block starting
+        // "Drive the team through the phases…". (The old "You are the team lead."
+        // assertion was stale — that string is what generate_spinup_prompt PREPENDS
+        // to the generated prompt, not the example file's lead_hint.)
+        assert!(wf.lead_hint.as_deref().unwrap().starts_with("Drive the team"));
         assert_eq!(wf.phases[1].roles, vec!["dev", "frontend"]);
         assert!(wf.phases[1].parallel);
     }
