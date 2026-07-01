@@ -262,6 +262,9 @@ pub fn discover_repos(from_dir: &str) -> Result<Vec<RepoEntry>, String> {
         if name.starts_with('.') {
             continue; // skip dotdirs (.git, .Trash, …)
         }
+        if is_build_junk(&name) {
+            continue; // never offer node_modules/target/dist/… as a repo target
+        }
         let is_repo = path.join(".git").exists();
         out.push(RepoEntry {
             name,
@@ -627,6 +630,25 @@ mod tests {
         let f = d.join("x.txt");
         std::fs::write(&f, "x").unwrap();
         assert!(discover_repos(f.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn discover_repos_hides_build_junk() {
+        // workspace/{realproj/.git, node_modules, target}; probe from inside
+        // realproj → workspace = ws; the picker must NOT list build-junk dirs.
+        let ws = temp_dir("discjunk");
+        for n in ["realproj", "node_modules", "target"] {
+            std::fs::create_dir(ws.join(n)).unwrap();
+        }
+        std::fs::create_dir(ws.join("realproj").join(".git")).unwrap();
+        let from = ws.join("realproj").join("src");
+        std::fs::create_dir(&from).unwrap();
+
+        let repos = discover_repos(from.to_str().unwrap()).unwrap();
+        let names: Vec<&str> = repos.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"realproj"));
+        assert!(!names.contains(&"node_modules"), "build junk must not appear in the repo picker");
+        assert!(!names.contains(&"target"), "build junk must not appear in the repo picker");
     }
 
     #[test]
