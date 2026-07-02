@@ -1,0 +1,72 @@
+{
+  "title": "CC Cockpit × Terax:<br><span class=\"accent\">Tier-1 Steal Shipped</span>",
+  "subtitle": "What a four-agent team explored, decided, built, and pushed in the Terax-steal session — and what is still open.",
+  "cover": {
+    "monogram": "C",
+    "org": "CC Cockpit · Build<br>Session Brief",
+    "presented_by": "Prepared by the <b>dev-team</b> &nbsp;·&nbsp; lead-integrated, Terax-steal track",
+    "metrics": [
+      { "value": "4", "label": "Features shipped" },
+      { "value": "12", "label": "Unit tests green" },
+      { "value": "2", "label": "Approval gates" },
+      { "value": "#1", "label": "Pull request" },
+      { "value": "4", "label": "Team agents" }
+    ],
+    "footnote": "Session 21–22 June 2026  ·  For internal use"
+  },
+  "doc_meta": {
+    "rows": [
+      { "label": "Goal", "value": "Explore Terax (closed-source Tauri AI terminal), compare vs CC Cockpit, decide what to steal, build Tier-1" },
+      { "label": "Process", "value": "4-agent team — product-owner → dev + frontend (parallel) → qa → lead integrate; 2 user approval gates" },
+      { "label": "Constraint", "value": "Claude Max single-provider — no multi-model / API-key / cost infra stolen" },
+      { "label": "Outcome", "value": "PR #1 — 4 Tier-1 features built, verified, pushed to private GitHub repo" }
+    ]
+  },
+  "verdict_headline": "Tier-1 steal-list shipped — four features built, verified, and pushed as PR #1.",
+  "verdict_sub": "Whole-UI zoom, disk-persisted layout, per-worktree git badge, and OS dock-badge attention. Backend + frontend gates green, one live smoke confirmed. What remains is manual keystroke checks and a Tier-2 backlog.",
+  "hero_numbers": [
+    { "value": "4", "label": "Features shipped", "note": "All four picks are STEAL-tier; nothing multi-provider taken." },
+    { "value": "12", "label": "Unit tests green", "note": "gitstatus.rs (7) + persist.rs (5); cargo green." },
+    { "value": "2", "label": "Gates passed", "note": "Scope approved, QA approved — 0 findings rejected." },
+    { "value": "#1", "label": "Pull request", "note": "Private repo created, branch pushed, PR open." }
+  ],
+  "tier_ladder": [
+    { "rank": 1, "source": "Whole-UI zoom — ⌘± / ⌘0 + Ctrl-wheel", "tier": "STEAL", "why": "Highest legibility-per-effort win on a dense terminal grid; ~30 lines + 1 capability perm." },
+    { "rank": 2, "source": "Disk-persisted layout (tabs + names + cwd)", "tier": "STEAL", "why": "Tab names and order survive reboot / kill-server / self-heal reset; atomic JSON in app_config_dir, schemaVersion added." },
+    { "rank": 3, "source": "Per-worktree git-status badge", "tier": "STEAL", "why": "Branch + dirty + ahead/behind per tab — the mission is teams over git worktrees, previously invisible." },
+    { "rank": 4, "source": "OS dock-badge + window attention", "tier": "STEAL", "why": "Fires when a backgrounded agent needs input; reuses existing per-pane needs-input state." },
+    { "rank": 5, "source": "Theme system + “claude” theme", "tier": "MAYBE", "why": "Tier-2 backlog — cockpit already uses CSS token vars; switcher is a refactor." },
+    { "rank": 6, "source": "Command / search palette", "tier": "MAYBE", "why": "Tier-2 backlog — overlay precedent exists; fixes thin discoverability." },
+    { "rank": 7, "source": "Snippets (slash-trigger → xterm)", "tier": "MAYBE", "why": "Tier-2 backlog — value for operators retyping spin-up prompts." },
+    { "rank": 8, "source": "AI-panel dock layout", "tier": "MAYBE", "why": "Tier-2 backlog — layout shell only; no agent-stream backend exists yet." }
+  ],
+  "charts": [
+    {
+      "id": "steal_scores",
+      "type": "barh",
+      "title": "Steal-list ranked by score (V × F × E, max 125)",
+      "x_label": "Score  ·  STEAL ≥ 60, MAYBE 30–59",
+      "items": [
+        { "label": "Whole-UI zoom", "value": 100, "color": 1 },
+        { "label": "Disk-persist layout", "value": 100, "color": 1 },
+        { "label": "Git-status badge", "value": 80, "color": 1 },
+        { "label": "OS attention", "value": 64, "color": 1 },
+        { "label": "Theme system", "value": 48, "color": 2 },
+        { "label": "Command palette", "value": 48, "color": 2 },
+        { "label": "Snippets", "value": 36, "color": 2 },
+        { "label": "AI-panel dock", "value": 36, "color": 2 }
+      ],
+      "legend": [
+        { "color": "navy", "label": "STEAL (shipped)" },
+        { "color": "gold", "label": "MAYBE (backlog)" }
+      ]
+    }
+  ],
+  "ui": {
+    "kicker": "Build Session · Status Brief",
+    "tag": "Internal",
+    "ladder_title": "Steal-list — ranked",
+    "footer": "CC Cockpit · Terax Tier-1 — Build Status Brief"
+  },
+  "body_markdown": "## What this brief covers\n\nOver one session, a four-agent team (product-owner, dev, frontend, QA) explored **Terax** — a closed-source Tauri AI terminal — compared it to **CC Cockpit**, decided what was worth stealing, then built and shipped the Tier-1 list. This is the status: what shipped, what was verified, and what is still open.\n\n::: verdict | Bottom line\nThe single biggest thing Terax does that Cockpit doesn't — multi-provider model infrastructure — is exactly what we must **not** steal (Claude Max = single provider). What's left and worth taking is a tight set of persistence, OS-integration, and UX-polish patterns. **Four STEAL-tier features were built, verified, and pushed as PR #1.**\n:::\n\n## The four features shipped\n\n| # | Feature | Score | What it does |\n|---|---|---|---|\n| 1 | Whole-UI zoom | 100 | ⌘+ / ⌘− / ⌘0 and Ctrl-wheel scale the whole webview; persisted. |\n| 2 | Disk-persisted layout | 100 | Tab names, order and cwd survive reboot / kill-server via atomic JSON. |\n| 3 | Per-worktree git badge | 80 | Branch + dirty dot + ahead/behind per tab, polled on focus. |\n| 4 | OS dock-badge attention | 64 | Dock badge + window bounce when a backgrounded agent needs input. |\n\n{{CHART:steal_scores}}\n\n## How it was verified\n\n- **Backend (Rust):** new `gitstatus.rs` + `persist.rs`, **12 unit tests green**; 3 capability permissions added (set-webview-zoom, request-user-attention, set-badge-count). `cargo build` + `cargo test` pass.\n- **Frontend (SolidJS):** `ipc` / `keyboard` / `store` / `TabBar` / `styles` wired; `tsc --noEmit` and `vite build` both exit 0.\n- **Live smoke:** the running binary's strings show all new commands + capabilities compiled in; the git badge renders live in a tab chip; `layout.json` is written at runtime with the expected schema.\n\n::: reconciled | Process discipline\nTwo user approval gates (scope, then QA shortlist) were honoured before any code was written. QA rejected nothing and the baseline stayed green. The recommendation deliberately rests on cockpit-need + feasibility, so it holds regardless of exactly how Terax implements each feature.\n:::\n\n## What's left\n\n::: gap | Open items — none blocking\n- **Manual keystroke smoke** — ⌘-zoom visual scale, restart → tab-name restore, and the dock badge on needs-input are wired and compiled but not yet keystroke-observed (live team sessions were in the panes).\n- **Add a `.gitignore`** to the freshly published repo.\n- **Pre-existing `templates` test failure** — reproduces before this work; belongs to the P3 templates owner, not this change.\n- **Tier-2 backlog (MAYBE):** theme system, command palette, snippets, AI-panel dock layout.\n- **Merge PR #1.**\n:::\n\n## Recommended next step\n\nRun the three manual keystroke checks against a throwaway tab, add the `.gitignore`, then merge PR #1. The Tier-2 backlog can be picked up feature-by-feature, each cheap and on-mission, whenever there's appetite."
+}
