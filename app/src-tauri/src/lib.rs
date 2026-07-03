@@ -676,9 +676,36 @@ fn repair_path_for_gui() {
     std::env::set_var("PATH", parts.join(":"));
 }
 
+/// True when none of the given locale values (LC_ALL, LC_CTYPE, LANG — any
+/// order) declares a UTF-8 charset. Split from `repair_locale_for_gui` so the
+/// decision is unit-testable without touching process env.
+fn needs_utf8_locale(vals: &[Option<String>]) -> bool {
+    !vals.iter().flatten().any(|v| {
+        let u = v.to_ascii_uppercase();
+        u.contains("UTF-8") || u.contains("UTF8")
+    })
+}
+
+/// Apps launched from Finder/launchd inherit an empty (C/POSIX) locale. tmux
+/// under a non-UTF-8 locale sanitizes control characters in command output —
+/// every literal TAB we use as a list-panes field delimiter arrives as `_`,
+/// fusing all fields into one garbage "pane id" (close/kill then target
+/// nonsense like `%2_2_/_MacBook-Air-Arman.local_0`). Install a UTF-8 LC_CTYPE
+/// so tmux passes tabs through verbatim; never override a user-set UTF-8 locale.
+fn repair_locale_for_gui() {
+    let vals: Vec<Option<String>> = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .map(|k| std::env::var(k).ok())
+        .collect();
+    if needs_utf8_locale(&vals) {
+        std::env::set_var("LC_CTYPE", "en_US.UTF-8");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     repair_path_for_gui();
+    repair_locale_for_gui();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
@@ -738,7 +765,30 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::needs_utf8_locale;
     use super::parse_path_capture;
+
+    #[test]
+    fn locale_needed_when_env_empty() {
+        // Finder/launchd launch: no locale vars at all → must repair.
+        assert!(needs_utf8_locale(&[None, None, None]));
+    }
+
+    #[test]
+    fn locale_needed_when_only_c_locale() {
+        assert!(needs_utf8_locale(&[Some("C".into()), None, None]));
+        assert!(needs_utf8_locale(&[None, None, Some("POSIX".into())]));
+    }
+
+    #[test]
+    fn locale_ok_when_any_var_is_utf8() {
+        assert!(!needs_utf8_locale(&[None, None, Some("en_US.UTF-8".into())]));
+        assert!(!needs_utf8_locale(&[Some("hy_AM.UTF-8".into()), None, None]));
+        // glibc-style spelling without the dash counts too.
+        assert!(!needs_utf8_locale(&[None, Some("en_US.utf8".into()), None]));
+        // Terminal.app sometimes sets a bare "UTF-8" LC_CTYPE.
+        assert!(!needs_utf8_locale(&[None, Some("UTF-8".into()), None]));
+    }
 
     #[test]
     fn parse_extracts_between_sentinels() {

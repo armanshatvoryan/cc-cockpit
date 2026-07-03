@@ -139,6 +139,14 @@ pub fn is_window_id(s: &str) -> bool {
     s.len() >= 2 && s.starts_with('@') && s[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
+/// A tmux pane id is `%` followed by ASCII digits (e.g. `%3`). List-parsers
+/// validate every id before serving it to the frontend: a C-locale tmux
+/// sanitizes the TAB field delimiters to `_`, fusing a whole list-panes line
+/// into one garbage "id" — that must die here, not surface as a broken pane.
+pub fn is_pane_id(s: &str) -> bool {
+    s.len() >= 2 && s.starts_with('%') && s[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
 /// tmux's "target window/pane doesn't exist" stderr — treated as idempotent
 /// success when closing a tab: a window that's already gone IS closed, so a no-op
 /// kill must not surface a scary error.
@@ -627,7 +635,7 @@ impl SessionManager {
                 let mut it = line.split('\t');
                 let win = it.next().unwrap_or("").to_string();
                 let pane = it.next().unwrap_or("").to_string();
-                if !win.is_empty() && !pane.is_empty() {
+                if is_window_id(&win) && is_pane_id(&pane) {
                     map.entry(win).or_default().push(pane);
                 }
             }
@@ -656,8 +664,8 @@ impl SessionManager {
             let cwd = it.next().unwrap_or("").to_string();
             let title = it.next().unwrap_or("").to_string();
             let dead = it.next().unwrap_or("0") == "1";
-            if pane.is_empty() {
-                continue;
+            if !is_pane_id(&pane) {
+                continue; // mangled/fused line (e.g. C-locale tab sanitization)
             }
             let status = self
                 .last_status
@@ -767,8 +775,8 @@ impl SessionManager {
             let pane = it.next().unwrap_or("").to_string();
             let dead = it.next().unwrap_or("0") == "1";
             let activity_raw = it.next().unwrap_or("").trim();
-            if pane.is_empty() {
-                continue;
+            if !is_pane_id(&pane) {
+                continue; // mangled/fused line (e.g. C-locale tab sanitization)
             }
             let age = activity_epoch_secs(activity_raw).map(|epoch| now.saturating_sub(epoch));
             rows.push(PollRow {
@@ -892,6 +900,21 @@ mod tests {
     fn tab_id_roundtrip() {
         assert_eq!(tab_id_for_index(0), "tab-0");
         assert_eq!(tab_id_for_index(7), "tab-7");
+    }
+
+    #[test]
+    fn pane_id_validation() {
+        assert!(is_pane_id("%0"));
+        assert!(is_pane_id("%137"));
+        assert!(!is_pane_id("%"));
+        assert!(!is_pane_id("0"));
+        assert!(!is_pane_id(""));
+        // A C-locale tmux sanitizes the tab delimiters in list-panes output to
+        // `_`, fusing the whole line into one string. That garbage must never
+        // be served to the frontend as a pane id.
+        assert!(!is_pane_id("%2_2_/_MacBook-Air-Arman.local_0"));
+        // Nor a line whose tabs survived but split failed upstream somehow.
+        assert!(!is_pane_id("%2\t2\t/"));
     }
 
     #[test]
