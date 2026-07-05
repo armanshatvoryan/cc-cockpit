@@ -1,5 +1,6 @@
-// TeamBoardPanel (P3 step 3) — the live team board: a read-only, newest-first
-// view of native Agent Teams sessions on disk (`~/.claude/teams/session-*/`).
+// TeamBoardPanel (P3 step 3) — the live team board: a mostly-read-only,
+// newest-first view of native Agent Teams sessions on disk (`~/.claude/teams/
+// session-*/`).
 //
 // Native owns the team runtime (lead + teammate panes + file mailbox + tasks);
 // nothing in native shows your teams at a glance, across runs, with a link from
@@ -7,10 +8,14 @@
 // confirmed teammate panes land on the cockpit's own `-L cockpit` socket, so a
 // live member's `%N` is an ordinary tracked pane — click it to jump there.
 //
-// Read-only this slice: no spin-up (step 2), no interrupt/detach yet. Slide-in
-// from the right (⌘⇧T), same shell as the inventory panel.
+// step 3.1: the board accretes one dir per Claude session, most of them lead-only
+// stubs that never spawned a team. So the default view HIDES that graveyard
+// (show only a real team ≥2 members created ≤7d ago; toggle reveals all), a
+// cleanup button DELETES the dead runs (guarding anything live/fresh), and every
+// member row is clickable — jump to a live pane, else open its cwd in a new pane.
+// Slide-in from the right (⌘⇧T), same shell as the inventory panel.
 
-import { For, Show, type Component } from "solid-js";
+import { createSignal, For, Show, type Component } from "solid-js";
 import type { TeamMember, TeamRun } from "../ipc";
 import {
   teamBoard,
@@ -20,6 +25,12 @@ import {
   focusTeamMemberPane,
   memberPaneIsLive,
   openSpinupDialog,
+  teamBoardShowAll,
+  toggleTeamBoardShowAll,
+  visibleTeamRuns,
+  deletableTeamRuns,
+  cleanupDeadRuns,
+  openMemberCwd,
 } from "../store";
 
 /** Short session id: drop the `session-` prefix for display. */
@@ -30,8 +41,41 @@ function shortSession(id: string): string {
 const MemberRow: Component<{ member: TeamMember }> = (props) => {
   const m = props.member;
   const live = () => memberPaneIsLive(m.tmuxPaneId);
+  const openable = () => !live() && !!m.cwd;
+  const clickable = () => live() || openable();
+  const act = () => {
+    if (live()) focusTeamMemberPane(m.tmuxPaneId);
+    else if (openable()) void openMemberCwd(m.cwd);
+  };
   return (
-    <div class="tb-member" classList={{ "tb-member-lead": m.isLead }}>
+    <div
+      class="tb-member"
+      classList={{
+        "tb-member-lead": m.isLead,
+        "tb-member-click": clickable(),
+        "tb-member-dim": !clickable(),
+      }}
+      role={clickable() ? "button" : undefined}
+      tabindex={clickable() ? 0 : undefined}
+      title={
+        live()
+          ? `Focus pane ${m.tmuxPaneId}`
+          : openable()
+            ? `Open ${m.cwd} in a new pane`
+            : undefined
+      }
+      onClick={clickable() ? act : undefined}
+      onKeyDown={
+        clickable()
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                act();
+              }
+            }
+          : undefined
+      }
+    >
       <span
         class="tb-dot"
         style={{ background: m.color ? colorOf(m.color) : "var(--tb-dot, #64748b)" }}
@@ -59,22 +103,16 @@ const MemberRow: Component<{ member: TeamMember }> = (props) => {
       >
         {m.mode}
       </span>
-      <Show
-        when={live()}
-        fallback={
-          <span class="tb-pane tb-pane-dim" title="not a pane in this cockpit">
-            {m.tmuxPaneId ?? "—"}
-          </span>
-        }
+      <span
+        class="tb-pane"
+        classList={{
+          "tb-pane-link": live(),
+          "tb-pane-open": openable(),
+          "tb-pane-dim": !clickable(),
+        }}
       >
-        <button
-          class="tb-pane tb-pane-link"
-          title={`Focus pane ${m.tmuxPaneId}`}
-          onClick={() => focusTeamMemberPane(m.tmuxPaneId)}
-        >
-          {m.tmuxPaneId} ▶
-        </button>
-      </Show>
+        {live() ? `${m.tmuxPaneId} ▶` : openable() ? "↗ cwd" : (m.tmuxPaneId ?? "—")}
+      </span>
     </div>
   );
 };
@@ -116,15 +154,53 @@ const TeamRunCard: Component<{ run: TeamRun }> = (props) => {
 };
 
 export const TeamBoardPanel: Component = () => {
+  // Two-step confirm for the (destructive, irreversible) cleanup.
+  const [confirming, setConfirming] = createSignal(false);
+  const [busy, setBusy] = createSignal(false);
+  const deadCount = () => deletableTeamRuns().length;
+
+  const runCleanup = async () => {
+    setBusy(true);
+    try {
+      await cleanupDeadRuns();
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  };
+
+  const closeAll = () => {
+    setConfirming(false);
+    closeTeamBoard();
+  };
+
   return (
     <Show when={teamBoardOpen()}>
       <aside class="inv-panel" role="dialog" aria-label="Team board">
         <header class="inv-header">
           <span class="inv-title">TEAM BOARD</span>
           <Show when={!teamBoard.loading}>
-            <span class="inv-count">{teamBoard.runs.length}</span>
+            <span class="inv-count">{visibleTeamRuns().length}</span>
+            <Show when={teamBoard.runs.length !== visibleTeamRuns().length || teamBoardShowAll()}>
+              <button
+                class="tb-toggle"
+                title={teamBoardShowAll() ? "Show only recent real teams" : "Show every session on disk"}
+                onClick={() => toggleTeamBoardShowAll()}
+              >
+                {teamBoardShowAll() ? "filtered" : `show all ${teamBoard.runs.length}`}
+              </button>
+            </Show>
           </Show>
           <span class="inv-spacer" />
+          <Show when={!teamBoard.loading && deadCount() > 0}>
+            <button
+              class="tb-cleanup-btn"
+              title={`Delete ${deadCount()} dead run${deadCount() === 1 ? "" : "s"} from disk`}
+              onClick={() => setConfirming(true)}
+            >
+              🗑 {deadCount()}
+            </button>
+          </Show>
           <button
             class="tb-new-btn"
             title="Spin up a team from a saved roster + workflow"
@@ -143,12 +219,30 @@ export const TeamBoardPanel: Component = () => {
           <button
             class="inv-icon-btn"
             title="Close (Esc)"
-            onClick={() => closeTeamBoard()}
+            onClick={closeAll}
             aria-label="Close team board"
           >
             ×
           </button>
         </header>
+
+        <Show when={confirming()}>
+          <div class="tb-confirm" role="alertdialog" aria-label="Confirm cleanup">
+            <div class="tb-confirm-text">
+              Delete {deadCount()} dead team run{deadCount() === 1 ? "" : "s"}? Removes each
+              session's <code>teams/</code> + <code>tasks/</code> dir. Live and just-written
+              sessions are kept.
+            </div>
+            <div class="tb-confirm-actions">
+              <button class="tb-btn" disabled={busy()} onClick={() => setConfirming(false)}>
+                cancel
+              </button>
+              <button class="tb-btn tb-btn-danger" disabled={busy()} onClick={() => void runCleanup()}>
+                {busy() ? "deleting…" : `delete ${deadCount()}`}
+              </button>
+            </div>
+          </div>
+        </Show>
 
         <div class="inv-body">
           <Show when={!teamBoard.loading} fallback={<div class="inv-empty">loading…</div>}>
@@ -157,22 +251,35 @@ export const TeamBoardPanel: Component = () => {
               fallback={<div class="inv-empty inv-error">{teamBoard.error}</div>}
             >
               <Show
-                when={teamBoard.runs.length > 0}
+                when={visibleTeamRuns().length > 0}
                 fallback={
                   <div class="inv-empty">
-                    no team sessions yet — start one with the Agent Teams feature
-                    (ask a Claude lead to spin up a teammate)
+                    <Show
+                      when={teamBoard.runs.length > 0}
+                      fallback={
+                        <>
+                          no team sessions yet — start one with the Agent Teams feature
+                          (ask a Claude lead to spin up a teammate)
+                        </>
+                      }
+                    >
+                      no recent teams — {teamBoard.runs.length} older/stub session
+                      {teamBoard.runs.length === 1 ? "" : "s"} hidden.{" "}
+                      <button class="tb-inline-link" onClick={() => toggleTeamBoardShowAll()}>
+                        show all
+                      </button>
+                    </Show>
                   </div>
                 }
               >
-                <For each={teamBoard.runs}>{(run) => <TeamRunCard run={run} />}</For>
+                <For each={visibleTeamRuns()}>{(run) => <TeamRunCard run={run} />}</For>
               </Show>
             </Show>
           </Show>
         </div>
 
         <footer class="inv-footer">
-          live from ~/.claude/teams · read-only · ⌘⇧T to close
+          live from ~/.claude/teams · ⌘⇧T to close
         </footer>
       </aside>
     </Show>

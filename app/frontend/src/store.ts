@@ -23,6 +23,7 @@ import {
   loadInventory,
   loadAuditMatrix,
   loadTeamRuns,
+  cleanupTeamRuns,
   loadCockpitTemplates,
   spinupPreview,
   togglePlugin,
@@ -716,6 +717,93 @@ export function focusTeamMemberPane(paneId?: string): boolean {
   focusPane(paneId);
   closeTeamBoard();
   return true;
+}
+
+// ── Team board filter + cleanup (P3 step 3.1) ────────────────────────────────
+// The board accretes one dir per Claude session on disk; most are lead-only
+// stubs that never spawned a team. Default view hides that graveyard — show only
+// a REAL team (>=2 members) created within STALE_DAYS — and a toggle reveals all.
+// Cleanup deletes the dead runs, guarding anything live or freshly written.
+
+const STALE_DAYS = 7;
+const FRESH_MIN = 10; // a run written this recently is an active session — never delete
+
+const [teamBoardShowAll, setTeamBoardShowAll] = createSignal(false);
+export { teamBoardShowAll };
+export function toggleTeamBoardShowAll(): void {
+  setTeamBoardShowAll((v) => !v);
+}
+
+/** A run that actually spawned teammates (more than just the lead). */
+function isRealTeam(run: TeamRun): boolean {
+  return run.members.length >= 2;
+}
+/** Created within the staleness window (missing createdAt → treated as old). */
+function isRecentRun(run: TeamRun): boolean {
+  if (run.createdAt == null) return false;
+  return Date.now() - run.createdAt < STALE_DAYS * 24 * 60 * 60 * 1000;
+}
+/** Default-view predicate: a real, recent team. A parse-error row always shows so
+ *  a broken dir stays visible (it never joins the hidden set, so bulk cleanup
+ *  leaves it alone — deal with a garbled dir by hand). */
+function runPassesDefaultFilter(run: TeamRun): boolean {
+  if (run.parseError) return true;
+  return isRealTeam(run) && isRecentRun(run);
+}
+
+/** Runs shown in the board, honoring the show-all toggle. */
+export function visibleTeamRuns(): TeamRun[] {
+  if (teamBoardShowAll()) return teamBoard.runs;
+  return teamBoard.runs.filter(runPassesDefaultFilter);
+}
+/** Runs hidden by the default filter (empty while show-all is on). */
+function hiddenTeamRuns(): TeamRun[] {
+  return teamBoard.runs.filter((r) => !runPassesDefaultFilter(r));
+}
+/** Any member's pane is live in this cockpit → never delete this run. */
+function runHasLivePane(run: TeamRun): boolean {
+  return run.members.some((m) => memberPaneIsLive(m.tmuxPaneId));
+}
+/** config.json written within FRESH_MIN → an active session, never delete. */
+function runIsFresh(run: TeamRun): boolean {
+  if (run.modifiedAt == null) return false;
+  return Date.now() - run.modifiedAt < FRESH_MIN * 60 * 1000;
+}
+/** Dead runs safe to delete: hidden, no live pane, not freshly written. Mirrors
+ *  the backend guard so the confirm count matches what actually deletes. */
+export function deletableTeamRuns(): TeamRun[] {
+  return hiddenTeamRuns().filter((r) => !runHasLivePane(r) && !runIsFresh(r));
+}
+
+/** Delete every currently-deletable dead run, then reload. Returns the count the
+ *  backend actually removed (it re-validates + protects fresh runs). */
+export async function cleanupDeadRuns(): Promise<number> {
+  const ids = deletableTeamRuns().map((r) => r.sessionId);
+  if (ids.length === 0) return 0;
+  try {
+    const deleted = await cleanupTeamRuns(ids);
+    await loadTeamRunsNow();
+    return deleted.length;
+  } catch (e) {
+    setTeamBoard("error", String(e));
+    return 0;
+  }
+}
+
+/** Open a member's project in a new pane cd'd to its cwd — the action for a
+ *  dead/headless row that has no live pane to jump to. No-op without a cwd. */
+export async function openMemberCwd(cwd?: string): Promise<void> {
+  if (!cwd) return;
+  try {
+    const res = await createTab();
+    await refreshState();
+    setActiveTabId(res.tabId);
+    setFocusedPaneId(res.paneId);
+    await launchShell(res.paneId, cwd);
+    closeTeamBoard();
+  } catch (e) {
+    setStore("error", `open cwd failed: ${String(e)}`);
+  }
 }
 
 // ── Spin-up (P3 step 2) ──────────────────────────────────────────────────────

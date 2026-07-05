@@ -165,6 +165,9 @@ export interface TeamRun {
   name: string;
   leadAgentId: string;
   createdAt?: number;
+  /** Epoch-ms mtime of `config.json` — last time the session wrote. Drives the
+   *  "actively writing → never delete" guard on the board. */
+  modifiedAt?: number;
   members: TeamMember[];
   /** Undelivered messages summed across the file mailbox. */
   inboxDepth: number;
@@ -433,6 +436,12 @@ export function loadCockpitTemplates(projectPath?: string): Promise<CockpitTempl
  */
 export function loadTeamRuns(): Promise<TeamRun[]> {
   return invoke<TeamRun[]>("load_team_runs");
+}
+
+/** Delete dead team-run dirs (teams/ + tasks/). Backend re-validates every id
+ *  and protects any run written in the last 10 min. Returns ids actually removed. */
+export function cleanupTeamRuns(sessionIds: string[]): Promise<string[]> {
+  return invoke<string[]>("cleanup_team_runs", { sessionIds });
 }
 
 /**

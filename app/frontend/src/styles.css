@@ -1216,6 +1216,124 @@ button {
   background: rgba(56, 189, 248, 0.22);
 }
 
+/* ── Board filter + cleanup (P3 step 3.1) ─────────────────────────────────── */
+/* Whole-row click: a live pane jumps, a dead row opens its cwd. */
+.tb-member-click {
+  cursor: pointer;
+}
+.tb-member-click:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.tb-member-click.tb-member-lead:hover {
+  background: rgba(56, 189, 248, 0.1);
+}
+.tb-member-dim {
+  opacity: 0.62;
+}
+/* The "↗ cwd" affordance on a dead/headless row (amber, distinct from live). */
+.tb-pane-open {
+  border: 1px solid var(--border-strong);
+  background: rgba(251, 146, 60, 0.12);
+  color: #fdba74;
+  cursor: pointer;
+}
+.tb-member-click:hover .tb-pane-open {
+  background: rgba(251, 146, 60, 0.22);
+}
+
+/* Header show-all / filtered toggle. */
+.tb-toggle {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  padding: 1px 7px;
+  margin-left: 6px;
+  cursor: pointer;
+}
+.tb-toggle:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Header cleanup button — destructive, so tinted red. */
+.tb-cleanup-btn {
+  font-size: 11px;
+  font-weight: 600;
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 6px;
+  padding: 3px 9px;
+  margin-right: 6px;
+  cursor: pointer;
+}
+.tb-cleanup-btn:hover {
+  background: rgba(248, 113, 113, 0.24);
+}
+
+/* Confirm bar (slides under the header before a destructive delete). */
+.tb-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(248, 113, 113, 0.08);
+  border-bottom: 1px solid rgba(248, 113, 113, 0.35);
+}
+.tb-confirm-text {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.tb-confirm-text code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.tb-confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.tb-btn {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.tb-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+.tb-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.tb-btn-danger {
+  color: #0f1115;
+  background: #f87171;
+  border-color: #f87171;
+}
+.tb-btn-danger:hover:not(:disabled) {
+  background: #fca5a5;
+}
+/* Inline "show all" link in the empty state. */
+.tb-inline-link {
+  font-size: inherit;
+  color: #7dd3fc;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 /* ── Spin-up dialog (P3 step 2) ───────────────────────────────────────────── */
 .modal-wide {
   width: 560px;

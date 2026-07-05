@@ -21,6 +21,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -67,6 +68,10 @@ pub struct TeamRun {
     /// Native epoch-ms create time, if present (used for newest-first ordering).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<u64>,
+    /// Epoch-ms mtime of `config.json` — the last time this session wrote. The
+    /// board uses it to protect an actively-writing session from cleanup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<u64>,
     pub members: Vec<TeamMember>,
     /// Total undelivered messages summed across `inboxes/*.json`.
     pub inbox_depth: usize,
@@ -124,6 +129,7 @@ fn read_one_run(dir: &Path, session_id: &str, tasks_dir: &Path) -> TeamRun {
         name: session_id.to_string(),
         lead_agent_id: String::new(),
         created_at: None,
+        modified_at: None,
         members: Vec::new(),
         inbox_depth: 0,
         task_count: 0,
@@ -131,6 +137,13 @@ fn read_one_run(dir: &Path, session_id: &str, tasks_dir: &Path) -> TeamRun {
     };
 
     let config_path = dir.join("config.json");
+    // Stat before parsing so even a garbled-config row carries an mtime (a broken
+    // dir is still cleanable, and cleanup wants the freshness signal).
+    run.modified_at = fs::metadata(&config_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|mt| mt.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
     let text = match fs::read_to_string(&config_path) {
         Ok(t) => t,
         Err(e) => {
@@ -231,6 +244,92 @@ fn task_count(tasks_session_dir: &Path) -> usize {
                 .starts_with('.')
         })
         .count()
+}
+
+// ── Cleanup (the ONE write path — delete dead run dirs) ───────────────────────
+//
+// The board is otherwise read-only; this is the sole mutation. It is deliberately
+// paranoid: the frontend hands us a list of session ids to drop, but we NEVER
+// trust it blindly. Each id is re-validated here (shape + containment) and each
+// run is re-checked against a freshness guard so an actively-writing session
+// (including the cockpit user's own current session) can never be deleted out
+// from under a live Claude process.
+
+/// A session id is safe to act on only if it is a plain `session-*` dir name with
+/// no path-traversal or separator tricks. Rejects `..`, `/`, `\`, NUL, bare
+/// `session-`.
+fn valid_session_id(id: &str) -> bool {
+    id.starts_with("session-")
+        && id.len() > "session-".len()
+        && !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains("..")
+        && !id.contains('\0')
+}
+
+/// True when the run's `config.json` was modified within `fresh` of now — i.e. a
+/// session that is (or just was) actively writing. Such runs are PROTECTED from
+/// deletion. A missing/unstattable config is treated as NOT fresh (a run with no
+/// live config is junk, safe to drop).
+fn is_fresh(config_path: &Path, fresh: Duration) -> bool {
+    fs::metadata(config_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|mt| SystemTime::now().duration_since(mt).ok())
+        .map(|age| age < fresh)
+        .unwrap_or(false)
+}
+
+/// Delete the given team-run session dirs under `home` — both the
+/// `~/.claude/teams/session-<id>/` config dir and the matching
+/// `~/.claude/tasks/session-<id>/` task dir. Returns the ids actually deleted.
+///
+/// Safety guards, applied per id (a rejected id is silently skipped, never an
+/// error — the caller only learns which ids were removed):
+///   * `valid_session_id` — shape + no traversal.
+///   * containment — the resolved teams target must sit directly under the teams
+///     dir (belt-and-suspenders on top of id validation).
+///   * freshness — skip any run whose `config.json` mtime is within `fresh`.
+///
+/// Never touches anything outside the teams/tasks roots. Absent target → skipped.
+pub fn cleanup_team_runs_at(
+    home: &Path,
+    ids: &[String],
+    fresh: Duration,
+) -> Result<Vec<String>, String> {
+    let teams_dir = home.join(".claude").join("teams");
+    let tasks_dir = home.join(".claude").join("tasks");
+    let mut deleted = Vec::new();
+
+    for id in ids {
+        if !valid_session_id(id) {
+            continue;
+        }
+        let teams_target = teams_dir.join(id);
+        // Containment belt: parent must be exactly the teams dir.
+        if teams_target.parent() != Some(teams_dir.as_path()) {
+            continue;
+        }
+        if is_fresh(&teams_target.join("config.json"), fresh) {
+            continue; // an actively-writing session — protected
+        }
+        // The teams dir is the source of truth; only claim a delete if it went.
+        if fs::remove_dir_all(&teams_target).is_ok() {
+            let _ = fs::remove_dir_all(tasks_dir.join(id)); // best-effort sibling
+            deleted.push(id.clone());
+        }
+    }
+    Ok(deleted)
+}
+
+/// Resolve `$HOME`, then delete the given runs. `fresh` is fixed at 10 minutes:
+/// long enough to cover a session mid-write, short enough that genuinely dead
+/// runs are always removable.
+pub fn cleanup_team_runs(ids: &[String]) -> Result<Vec<String>, String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME not set".to_string())?;
+    cleanup_team_runs_at(&home, ids, Duration::from_secs(600))
 }
 
 // ── Tests (sandbox-only; never touch the real ~/.claude) ──────────────────────
@@ -433,5 +532,107 @@ mod tests {
         let runs = load_team_runs_at(&sb.home());
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].name, "ok");
+    }
+
+    // ── cleanup_team_runs_at ──────────────────────────────────────────────────
+
+    /// `fresh = ZERO` makes nothing count as "fresh" (age < 0 is impossible), so
+    /// every well-formed id is deletable — the deterministic delete path.
+    const DELETE_ALL: Duration = Duration::ZERO;
+
+    fn exists(sb: &Sandbox, rel: &str) -> bool {
+        sb.root.join(rel).exists()
+    }
+
+    #[test]
+    fn cleanup_removes_both_teams_and_tasks_dirs() {
+        let sb = Sandbox::new("cln-both");
+        sb.write("home/.claude/teams/session-dead/config.json", "{}");
+        sb.write("home/.claude/tasks/session-dead/task-1.json", "{}");
+
+        let deleted =
+            cleanup_team_runs_at(&sb.home(), &["session-dead".into()], DELETE_ALL).unwrap();
+
+        assert_eq!(deleted, vec!["session-dead".to_string()]);
+        assert!(!exists(&sb, "home/.claude/teams/session-dead"));
+        assert!(!exists(&sb, "home/.claude/tasks/session-dead"));
+    }
+
+    #[test]
+    fn cleanup_protects_a_freshly_written_run() {
+        let sb = Sandbox::new("cln-fresh");
+        sb.write("home/.claude/teams/session-live/config.json", "{}");
+
+        // A 1-hour freshness window: the file we just wrote is well within it, so
+        // the run is protected — this is the guard for an active session (incl.
+        // the cockpit user's own current session).
+        let deleted = cleanup_team_runs_at(
+            &sb.home(),
+            &["session-live".into()],
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        assert!(deleted.is_empty());
+        assert!(exists(&sb, "home/.claude/teams/session-live"));
+    }
+
+    #[test]
+    fn cleanup_deletes_a_configless_stub() {
+        // No config.json → cannot be "fresh" → junk, removable even under a wide
+        // freshness window.
+        let sb = Sandbox::new("cln-nocfg");
+        fs::create_dir_all(sb.root.join("home/.claude/teams/session-stub")).unwrap();
+
+        let deleted = cleanup_team_runs_at(
+            &sb.home(),
+            &["session-stub".into()],
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        assert_eq!(deleted, vec!["session-stub".to_string()]);
+        assert!(!exists(&sb, "home/.claude/teams/session-stub"));
+    }
+
+    #[test]
+    fn cleanup_rejects_traversal_and_malformed_ids() {
+        let sb = Sandbox::new("cln-evil");
+        sb.write("home/.claude/teams/session-ok/config.json", "{}");
+        // A sentinel OUTSIDE the teams dir that a traversal id would target.
+        fs::create_dir_all(sb.root.join("home/.claude/secrets")).unwrap();
+
+        let evil = vec![
+            "../secrets".to_string(),
+            "session-../secrets".to_string(),
+            "session-ok/../../secrets".to_string(),
+            "session-".to_string(),
+            "not-a-session".to_string(),
+            "session-a\0b".to_string(),
+        ];
+        let deleted = cleanup_team_runs_at(&sb.home(), &evil, DELETE_ALL).unwrap();
+
+        assert!(deleted.is_empty());
+        assert!(exists(&sb, "home/.claude/secrets"));
+        assert!(exists(&sb, "home/.claude/teams/session-ok"));
+    }
+
+    #[test]
+    fn cleanup_only_touches_named_ids_and_skips_missing() {
+        let sb = Sandbox::new("cln-scope");
+        sb.write("home/.claude/teams/session-a/config.json", "{}");
+        sb.write("home/.claude/teams/session-b/config.json", "{}");
+
+        // Ask to delete `a` and a nonexistent `ghost`; `b` must survive untouched.
+        let deleted = cleanup_team_runs_at(
+            &sb.home(),
+            &["session-a".into(), "session-ghost".into()],
+            DELETE_ALL,
+        )
+        .unwrap();
+
+        assert_eq!(deleted, vec!["session-a".to_string()]);
+        assert!(!exists(&sb, "home/.claude/teams/session-a"));
+        assert!(exists(&sb, "home/.claude/teams/session-b"));
     }
 }

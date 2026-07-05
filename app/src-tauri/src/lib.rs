@@ -346,6 +346,16 @@ fn load_team_runs() -> Result<Vec<teamruns::TeamRun>, String> {
     teamruns::load_team_runs()
 }
 
+/// Team board cleanup — the ONE write path on team-run data. Deletes the given
+/// dead `session-<id>` dirs (`~/.claude/teams/` + matching `~/.claude/tasks/`).
+/// Paranoid by design: re-validates every id (shape + no traversal) and refuses
+/// any run whose `config.json` was touched in the last 10 min (an actively
+/// writing session — including the caller's own). Returns the ids actually removed.
+#[tauri::command]
+fn cleanup_team_runs(session_ids: Vec<String>) -> Result<Vec<String>, String> {
+    teamruns::cleanup_team_runs(&session_ids)
+}
+
 /// Spin-up review (P3 step 2): pair a saved roster + workflow + task → the
 /// generated lead prompt + role-coverage problems for the review dialog. Pure
 /// read/compose — the actual launch (createTab + launch claude + send) is
@@ -732,6 +742,7 @@ pub fn run() {
             load_audit_matrix,
             load_cockpit_templates,
             load_team_runs,
+            cleanup_team_runs,
             spinup_preview,
             list_dir,
             pane_cwd,
