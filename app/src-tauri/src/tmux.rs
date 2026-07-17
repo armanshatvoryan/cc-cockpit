@@ -19,6 +19,32 @@ use std::process::Command;
 pub const SOCKET: &str = "cockpit";
 /// The single cockpit session that holds all tabs (windows) and panes.
 pub const SESSION: &str = "cockpit-main";
+/// Directory (under $HOME) where new tabs and the bootstrap session start.
+/// Finder-launched apps inherit cwd `/`, so without an explicit `-c` every
+/// fresh pane opened at the filesystem root.
+pub const DEFAULT_DIR_UNDER_HOME: &str = "Workflows";
+
+/// Start directory for new sessions/tabs: `$HOME/Workflows` when it exists,
+/// else `$HOME`, else `/` (no HOME — shouldn't happen in a GUI launch).
+pub fn default_cwd() -> String {
+    default_cwd_impl(std::env::var("HOME").ok(), |p| {
+        std::path::Path::new(p).is_dir()
+    })
+}
+
+fn default_cwd_impl(home: Option<String>, is_dir: impl Fn(&str) -> bool) -> String {
+    match home {
+        Some(h) => {
+            let preferred = format!("{h}/{DEFAULT_DIR_UNDER_HOME}");
+            if is_dir(&preferred) {
+                preferred
+            } else {
+                h
+            }
+        }
+        None => "/".into(),
+    }
+}
 
 /// Result of a tmux admin invocation.
 pub struct TmuxOut {
@@ -88,6 +114,7 @@ pub fn ensure_session() -> Result<(), String> {
     }
     // -d detached, -s session name. The default first window is the bootstrap
     // tab; the SessionManager renames/derives tab ids from window ids.
+    let cwd = default_cwd();
     tmux_ok(&[
         "new-session",
         "-d",
@@ -97,6 +124,8 @@ pub fn ensure_session() -> Result<(), String> {
         "200",
         "-y",
         "50",
+        "-c",
+        &cwd,
     ])?;
     // Don't let panes vanish the instant a command exits — we want pane_dead so
     // the status heuristic can report DEAD instead of the pane just disappearing.
@@ -181,5 +210,16 @@ mod tests {
         assert_eq!(shq("/tmp/a b"), "'/tmp/a b'");
         assert_eq!(shq("it's"), "'it'\\''s'");
         assert_eq!(shq(""), "''");
+    }
+
+    #[test]
+    fn default_cwd_prefers_workflows_then_home_then_root() {
+        let home = Some("/Users/u".to_string());
+        assert_eq!(
+            default_cwd_impl(home.clone(), |p| p == "/Users/u/Workflows"),
+            "/Users/u/Workflows"
+        );
+        assert_eq!(default_cwd_impl(home, |_| false), "/Users/u");
+        assert_eq!(default_cwd_impl(None, |_| true), "/");
     }
 }

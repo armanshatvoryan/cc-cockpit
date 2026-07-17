@@ -249,6 +249,17 @@ fn pane_resize(state: State<'_, AppState>, pane_id: String, cols: u16, rows: u16
 /// change), replacing the per-pane client resize that collapsed multi-pane tabs.
 #[tauri::command]
 fn set_grid(state: State<'_, AppState>, cols: u16, rows: u16, layout: String) -> Result<(), String> {
+    // TEMP DEBUG (remove): trace grid pushes from the webview.
+    {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/cockpit-dbg.log")
+        {
+            let _ = writeln!(f, "[cmd] set_grid cols={cols} rows={rows} layout={layout}");
+        }
+    }
     let mut mgr = state.mgr.lock().unwrap();
     mgr.set_grid(cols, rows, &layout)
 }

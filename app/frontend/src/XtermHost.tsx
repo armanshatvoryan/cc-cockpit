@@ -20,7 +20,6 @@ import {
   onPaneData,
   paneSendKeys,
   warmStart,
-  warmStartScreen,
   type PaneDataPayload,
 } from "./ipc";
 import { reportCell } from "./store";
@@ -79,8 +78,10 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     // Output: write decoded bytes verbatim (xterm is a full VT emulator).
     let unlistenData: UnlistenFn | undefined;
     let disposed = false;
+    let lastDataTs = 0; // for resync quiescence — 0 = never, i.e. already quiet
     onPaneData((p: PaneDataPayload) => {
       if (p.paneId !== paneId) return;
+      lastDataTs = performance.now();
       term.write(b64ToBytes(p.bytesB64));
     }).then((u) => {
       if (disposed) {
@@ -126,29 +127,38 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     });
     ro.observe(hostEl);
 
-    // Re-sync to tmux's authoritative grid after a pane resize (see
-    // store.scheduleResync). xterm's own reflow leaves the old, wider frame
-    // wrapped + scattered; tmux holds the pane's clean grid re-rendered at the new
-    // width, so wipe xterm and replay it. This is the automated form of the Ctrl+L
-    // the user would otherwise press.
+    // Post-resize repair (see store.scheduleResync): after a geometry change,
+    // a full-screen TUI (CC) repaints only lines IT believes changed, so any
+    // xterm↔frame-model divergence persists — the resize garble Ctrl+L fixes
+    // by hand. Two generations of capture-replay (warmStartScreen → reset →
+    // write) still left scatter on fullscreen toggles: the capture races the
+    // redraw and the replayed rows carry trim/width edge cases. The app itself
+    // is the only renderer that can repaint its screen correctly — so send it
+    // the user's proven fix: a literal Ctrl+L (form feed). CC/vim/less repaint
+    // in full; a shell clears + redraws its prompt (input line preserved).
     //
-    // Replay the VISIBLE screen ONLY (`warmStartScreen`), NOT the scrollback: a
-    // shell redraws its prompt on every SIGWINCH and leaves the old prompt in
-    // scrollback, so replaying full history (`warmStart`) dumps a trail of
-    // accumulated prompts back into xterm — the exact "adds new lines every ⌘B/⌘D"
-    // garble. The visible grid is clean (it's what Ctrl+L shows), so replay that.
-    // (Mount still uses full-scrollback `warmStart` to restore a re-attached
-    // pane's history.) Guard the hidden case (0×0) and the unmount race.
+    // QUIESCENCE GATE: sent only once the pane's output has been quiet for
+    // RESYNC_QUIET_MS — a ^L landing mid-SIGWINCH-storm just joins the storm.
+    // Capped: a token-streaming pane never goes quiet; a capped ^L is still a
+    // full repaint request and self-corrects.
+    const RESYNC_QUIET_MS = 250;
+    const RESYNC_MAX_WAIT_MS = 2000;
+    let resyncWaitTimer: number | undefined;
     const onResync = () => {
-      if (disposed || hostEl.clientWidth === 0 || hostEl.clientHeight === 0)
-        return;
-      warmStartScreen(paneId)
-        .then((w) => {
-          if (disposed || !w.bytesB64) return;
-          term.reset();
-          term.write(b64ToBytes(w.bytesB64));
-        })
-        .catch(() => {});
+      if (resyncWaitTimer) clearTimeout(resyncWaitTimer); // restart on re-broadcast
+      const started = performance.now();
+      const attempt = () => {
+        if (disposed || hostEl.clientWidth === 0 || hostEl.clientHeight === 0)
+          return;
+        const idle = performance.now() - lastDataTs;
+        const waited = performance.now() - started;
+        if (idle < RESYNC_QUIET_MS && waited < RESYNC_MAX_WAIT_MS) {
+          resyncWaitTimer = window.setTimeout(attempt, RESYNC_QUIET_MS - idle + 10);
+          return;
+        }
+        paneSendKeys(paneId, "\x0c"); // Ctrl+L — fire-and-forget
+      };
+      attempt();
     };
     window.addEventListener("cockpit:resync", onResync);
 
@@ -156,6 +166,7 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     onCleanup(() => {
       disposed = true;
       if (resizeTimer) clearTimeout(resizeTimer);
+      if (resyncWaitTimer) clearTimeout(resyncWaitTimer);
       ro.disconnect();
       window.removeEventListener("cockpit:resync", onResync);
       dataSub.dispose();

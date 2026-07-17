@@ -309,11 +309,15 @@ export async function bootCockpit(): Promise<void> {
     topoTimer = window.setTimeout(() => void refreshState(), 120);
   });
 
-  // cockpit:reconnected — backend re-healed a vanished server. Reload state; the
-  // reconnected session's panes have new ids, so <For> remounts them (warm-start).
+  // cockpit:reconnected — backend re-healed a vanished server. Reload state, then
+  // re-push the grid: the replacement server was born at default size and a fresh
+  // server reuses pane ids (%0…), so <For> may NOT remount the xterms — no
+  // reportCell fires, and even when one does, the unchanged cell size hits the
+  // pushGrid change-guard. Without the reset the new server never hears
+  // `refresh-client -C` and panes sit at tmux birth size (200×50) → garble.
   const unReconnect = await onCockpitReconnected(() => {
     setStore("error", null);
-    void refreshState();
+    void refreshState().then(gridServerReset);
   });
 
   // cockpit:close-requested — ⌘W / window close button. Close the focused pane
@@ -371,12 +375,35 @@ function gridColumns(n: number): number {
   return 3;
 }
 
-/** An xterm reports its fitted cell size; recompute + push the window grid. */
+/** The tmux server was replaced (mid-op re-heal or healing create_tab). The
+ * recorded grid key describes a push only the DEAD server ever applied, so the
+ * change-guard would swallow the next push and leave the new server's panes at
+ * birth size. Drop the guard and push the current grid unconditionally. */
+export function gridServerReset(): void {
+  lastGridKey = "";
+  if (gridTimer) clearTimeout(gridTimer);
+  // 500ms matches the first-push settle gate: post-reconnect remounts refit in
+  // steps too, and any reportCell in the window extends the timer via the gate.
+  gridTimer = window.setTimeout(() => void pushGrid(), 500);
+}
+
+/** An xterm reports its fitted cell size; recompute + push the window grid.
+ *
+ * FIRST-PUSH SETTLE GATE: during boot/reconnect the webview settles in steps
+ * (window restore, sidebar mount, async setZoom re-metrics) and the fitted
+ * size walks through garbage intermediates (observed 154→65→118→163→181).
+ * Pushing each one gave the pane's TUI an overlapping SIGWINCH storm whose
+ * partial differential redraws pollute tmux's own grid. Until the first push
+ * lands (lastGridKey === "") require a longer stretch of stability so boot
+ * collapses into ONE clean transition. Settled UI: 350ms — still one push per
+ * gesture, but discrete steps landing a couple hundred ms apart (fullscreen
+ * toggle, snap layouts) coalesce instead of double-pushing into a storm. */
 export function reportCell(cols: number, rows: number): void {
   if (cols > 0) cellCols = cols;
   if (rows > 0) cellRows = rows;
   if (gridTimer) clearTimeout(gridTimer);
-  gridTimer = window.setTimeout(() => void pushGrid(), 90);
+  const delay = lastGridKey === "" ? 500 : 350;
+  gridTimer = window.setTimeout(() => void pushGrid(), delay);
 }
 
 async function pushGrid(): Promise<void> {

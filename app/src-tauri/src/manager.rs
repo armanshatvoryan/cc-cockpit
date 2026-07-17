@@ -264,6 +264,8 @@ impl SessionManager {
             "new-window".into(),
             "-t".into(),
             format!("{SESSION}:"),
+            "-c".into(),
+            tmux::default_cwd(),
             "-P".into(),
             "-F".into(),
             "#{window_id} #{window_index} #{pane_id}".into(),
@@ -412,11 +414,15 @@ impl SessionManager {
             "v" => "-v",
             other => return Err(format!("bad split dir {other:?}, want 'h' or 'v'")),
         };
+        // -c inherits the source pane's cwd (server-side format expansion) —
+        // splitting a pane you've cd'd somewhere keeps you there.
         let out = tmux::tmux_ok(&[
             "split-window",
             flag,
             "-t",
             pane_id,
+            "-c",
+            "#{pane_current_path}",
             "-P",
             "-F",
             "#{pane_id}",

@@ -42,7 +42,7 @@ engine `write_cmd` + lib.rs `set_grid` /tmp/cockpit-dbg.log tracers). Stash drop
 NOTE: the installed /Applications build is the CLEAN feature build (no debug tracers);
 the debug tracers live only in the source tree for the user's S3940 continuation.
 
-## Status — COMPLETE (uncommitted)
+## Status — SHIPPED (merged to main, PR #3, feature 0bcc96d, merge e5457c6)
 - [x] backend cleanup core + tests (TDD) — 5 new tests green
 - [x] register tauri command `cleanup_team_runs`
 - [x] ipc wrapper `cleanupTeamRuns` + `modifiedAt` field
@@ -52,15 +52,11 @@ the debug tracers live only in the source tree for the user's S3940 continuation
 - [x] data layer verified on real corpus (35 dirs, filter→4 visible, no panic)
 - [x] installed to /Applications + launched (pid alive, 78MB, no crash) — GUI
       RENDER itself unverified (headless: cannot see panel/click a delete)
-- [ ] NOT committed (waiting on user; harness rule = commit only when asked)
+- [x] committed 0bcc96d (feature only; S3940 debug tracers kept OUT via edit-out→commit→edit-in)
+- [x] pushed + PR #3 → merged to main (merge e5457c6); remote branch still up (delete blocked)
 
-## Status (old)
-- [ ] backend cleanup core + tests (TDD)
-- [ ] register tauri command
-- [ ] ipc wrapper
-- [ ] store: filter state + cleanup + openMemberCwd
-- [ ] panel UI: toggle + cleanup + confirm + row wiring + CSS
-- [ ] build + smoke launch (watch it run — CLAUDE.md build gate)
-
-## Next
-Start with backend TDD (teamruns.rs has a Sandbox test harness at mod tests).
+## Follow-ups (not blockers)
+- Eyeball the panel in the GUI (⌘⇧T) — render never verified headless.
+- Aggressive default hides/deletes OLD REAL teams too (intended). One-line tweak
+  to `runPassesDefaultFilter` if age-cap on real teams is unwanted.
+- Remote branch `feat/team-board-filter-cleanup` still up (delete was blocked).

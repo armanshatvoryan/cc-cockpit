@@ -166,6 +166,17 @@ impl ControlClient {
     }
 
     fn write_cmd(&mut self, cmd: &str) -> Result<(), EngineError> {
+        // TEMP DEBUG (remove): trace every control-mode command written.
+        {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/cockpit-dbg.log")
+            {
+                let _ = writeln!(f, "[eng {}] write_cmd {:?}", std::process::id(), cmd);
+            }
+        }
         self.stdin
             .write_all(cmd.as_bytes())
             .map_err(EngineError::Write)?;
