@@ -556,7 +556,13 @@ impl SessionManager {
     /// Size the whole window to the grid bounding box + re-tile (multi-pane safe).
     /// `layout` is validated to a known tmux layout name so a bad value can't be
     /// injected into the control stream.
-    pub fn set_grid(&mut self, cols: u16, rows: u16, layout: &str) -> Result<(), String> {
+    pub fn set_grid(
+        &mut self,
+        window_id: &str,
+        cols: u16,
+        rows: u16,
+        layout: &str,
+    ) -> Result<(), String> {
         let layout = match layout {
             "tiled" | "even-horizontal" | "even-vertical" | "main-horizontal"
             | "main-vertical" => layout,
@@ -566,7 +572,7 @@ impl SessionManager {
         let cols = cols.clamp(20, 2000);
         let rows = rows.clamp(5, 500);
         self.client_mut()?
-            .set_grid(cols, rows, layout)
+            .set_grid(window_id, cols, rows, layout)
             .map_err(|e| e.to_string())
     }
 

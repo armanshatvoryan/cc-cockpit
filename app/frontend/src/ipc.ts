@@ -363,12 +363,17 @@ export function paneResize(paneId: string, cols: number, rows: number): Promise<
 }
 
 /**
- * Size the WHOLE tmux window to the grid's bounding box and re-tile. This is the
- * single authority for window size (the control client's size IS the window
- * size), replacing per-pane resizes that collapsed multi-pane tabs to 1 column.
+ * Size ONE tmux window (`windowId`, e.g. "@3") to that tab's grid bounding box
+ * and re-tile it. Sizing is per-window: tabs no longer share the control
+ * client's viewport, so switching tabs cannot resize the tabs you left behind.
  */
-export function setGrid(cols: number, rows: number, layout: string): Promise<void> {
-  return invoke<void>("set_grid", { cols, rows, layout });
+export function setGrid(
+  windowId: string,
+  cols: number,
+  rows: number,
+  layout: string,
+): Promise<void> {
+  return invoke<void>("set_grid", { windowId, cols, rows, layout });
 }
 
 /** Ctrl+C interrupt for a pane. */

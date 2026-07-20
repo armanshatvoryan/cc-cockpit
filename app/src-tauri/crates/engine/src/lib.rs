@@ -141,26 +141,40 @@ impl ControlClient {
         self.write_cmd(&cmd)
     }
 
-    /// Size the WHOLE window (the control client's viewport IS the window size) to
-    /// the grid's bounding box, then re-tile. This is the correct multi-pane path:
-    /// the per-pane `refresh-client` in `pane_resize` makes every xterm fight over
-    /// the single client size, so the last writer shrinks the window to ONE pane's
-    /// width and the others collapse to 1 col ("no space for new pane" on split).
-    /// Here ONE authority (the frontend grid coordinator) sets the window to the
-    /// sum of the tiles and `select-layout` distributes panes evenly so each tmux
-    /// pane matches its xterm cell. `layout` is a tmux layout name (e.g. `tiled`).
+    /// Size ONE tmux window to the grid's bounding box, then re-tile it.
+    ///
+    /// Every command targets `window_id` explicitly. The previous shape mixed two
+    /// scopes and corrupted whichever window tmux happened to consider current:
+    /// `refresh-client -C` sets the CLIENT size (session-global) while an
+    /// untargeted `select-layout` acts on the session's CURRENT window — and
+    /// nothing in cockpit ever issues `select-window`, so tmux's current window
+    /// is just the last-created one and never follows the tab on screen. Result:
+    /// the displayed tab was never actually laid out and some other tab got
+    /// re-tiled behind the user's back (root cause #8, 2026-07-20).
+    ///
+    /// `window-size manual` is what lets each window keep its own size instead of
+    /// following the shared client viewport. It MUST be set per-window: setting it
+    /// globally (`set-option -g`) makes the next `new-window` kill the tmux 3.6b
+    /// server outright — bisected on a throwaway socket 2026-07-20. Re-set on
+    /// every push so windows created before this code shipped self-heal.
     pub fn set_grid(
         &mut self,
+        window_id: &str,
         cols: u16,
         rows: u16,
         layout: &str,
     ) -> Result<(), EngineError> {
-        // refresh-client first (grow the window), THEN select-layout (tile within).
-        let cmd = format!("refresh-client -C {cols},{rows}\nselect-layout {layout}\n");
-        self.write_cmd(&cmd)
+        self.write_cmd(&build_set_grid_cmd(window_id, cols, rows, layout))
     }
 
     /// Ctrl+C interrupt (P1-F5): send 0x03 to the pane.
+    ///
+    /// NOTE: there is deliberately no "send Ctrl+L to repair the display" helper.
+    /// Injecting keystrokes into a live pane is indistinguishable from the user
+    /// typing them — the auto-^L resync shipped in iteration #5 fired at every
+    /// pane on every grid push and cleared Claude Code's rendered transcript
+    /// (root cause #7, 2026-07-20). Repaints must come from the app's own
+    /// SIGWINCH handling, never from synthesized input.
     pub fn interrupt_pane(&mut self, pane_id: &str) -> Result<(), EngineError> {
         self.pane_send_keys_hex(pane_id, &[0x03])
     }
@@ -262,6 +276,16 @@ fn pump(mut stdout: impl Read, tx: Sender<Outbound>) {
     let _ = tx.send(Outbound::Exit { reason: Some("eof".into()) });
 }
 
+/// Command batch for [`ControlClient::set_grid`]. Split out from the method so
+/// the exact command shape is unit-testable without a live tmux server.
+fn build_set_grid_cmd(window_id: &str, cols: u16, rows: u16, layout: &str) -> String {
+    format!(
+        "set-option -w -t {window_id} window-size manual\n\
+         resize-window -t {window_id} -x {cols} -y {rows}\n\
+         select-layout -t {window_id} {layout}\n"
+    )
+}
+
 /// Wrap `s` in single quotes, escaping embedded single quotes for the tmux
 /// command line (`'\''` trick). Adequate for the spike's send-keys path.
 fn shell_single_quote(s: &str) -> String {
@@ -286,6 +310,43 @@ mod tests {
     fn single_quote_escapes_embedded_quote() {
         assert_eq!(shell_single_quote("ab"), "'ab'");
         assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    fn set_grid_targets_exactly_one_window() {
+        let cmd = build_set_grid_cmd("@3", 189, 54, "even-horizontal");
+        assert_eq!(
+            cmd,
+            "set-option -w -t @3 window-size manual\n\
+             resize-window -t @3 -x 189 -y 54\n\
+             select-layout -t @3 even-horizontal\n"
+        );
+        // Every command must name the window. An untargeted `select-layout` acts
+        // on tmux's CURRENT window, which cockpit never updates (no select-window
+        // anywhere), so it re-tiled the last-created tab instead of the visible
+        // one — root cause #8.
+        for line in cmd.lines() {
+            assert!(line.contains("-t @3"), "untargeted command: {line}");
+        }
+    }
+
+    #[test]
+    fn set_grid_never_sets_window_size_globally() {
+        let cmd = build_set_grid_cmd("@0", 100, 30, "tiled");
+        // `set-option -g window-size manual` makes the NEXT `new-window` kill the
+        // tmux 3.6b server ("server exited unexpectedly") — bisected live on a
+        // throwaway socket 2026-07-20. Per-window (`-w -t`) is safe.
+        assert!(
+            !cmd.contains("set-option -g"),
+            "global window-size crashes new-window on tmux 3.6b: {cmd}"
+        );
+        assert!(cmd.contains("set-option -w -t @0 window-size manual"));
+        // The client viewport is session-global and must no longer be touched:
+        // it was what coupled every tab to one shared size.
+        assert!(
+            !cmd.contains("refresh-client"),
+            "client-global sizing must be gone: {cmd}"
+        );
     }
 
     #[test]

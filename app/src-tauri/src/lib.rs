@@ -248,7 +248,13 @@ fn pane_resize(state: State<'_, AppState>, pane_id: String, cols: u16, rows: u16
 /// coordinator is the SINGLE authority for window size (one call per layout
 /// change), replacing the per-pane client resize that collapsed multi-pane tabs.
 #[tauri::command]
-fn set_grid(state: State<'_, AppState>, cols: u16, rows: u16, layout: String) -> Result<(), String> {
+fn set_grid(
+    state: State<'_, AppState>,
+    window_id: String,
+    cols: u16,
+    rows: u16,
+    layout: String,
+) -> Result<(), String> {
     // TEMP DEBUG (remove): trace grid pushes from the webview.
     {
         use std::io::Write as _;
@@ -257,11 +263,14 @@ fn set_grid(state: State<'_, AppState>, cols: u16, rows: u16, layout: String) ->
             .append(true)
             .open("/tmp/cockpit-dbg.log")
         {
-            let _ = writeln!(f, "[cmd] set_grid cols={cols} rows={rows} layout={layout}");
+            let _ = writeln!(
+                f,
+                "[cmd] set_grid win={window_id} cols={cols} rows={rows} layout={layout}"
+            );
         }
     }
     let mut mgr = state.mgr.lock().unwrap();
-    mgr.set_grid(cols, rows, &layout)
+    mgr.set_grid(&window_id, cols, rows, &layout)
 }
 
 #[tauri::command]

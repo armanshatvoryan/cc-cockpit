@@ -153,3 +153,189 @@ IPC boundary; reproduce env with `env -i` / `open`, never from a shell. Check
 `strings <binary> | grep <marker>` before trusting "instrumented build
 installed" claims. tmux server start time (`display-message -p '#{start_time}'`)
 vs app process start time reveals server rebirths.
+
+## ROOT CAUSE #6 (mode 5 — "tab switch garbles, NO resize", found 2026-07-20)
+Tab switch alone corrupts panes. Evidence (live, app PID 91761):
+- `PaneGrid` renders `<For each={activePanes()}>` and `activePanes()` returns the
+  ACTIVE TAB ONLY (store.ts:109) ⇒ every tab switch UNMOUNTS the old tab's
+  XtermHosts and MOUNTS the new tab's fresh+empty. Not a hide — a full teardown.
+- Each fresh mount calls `warm_start` = `capture-pane -p -e -S -` (manager.rs:823)
+  = the WHOLE scrollback replayed into the empty xterm. Live: %14 capture = 646
+  lines (hist=567).
+- **54 of those 646 lines are exactly pane width (94 cols).** capture-pane emits
+  hard-wrapped lines joined by `\n` and does NOT distinguish soft wrap from real
+  newline, so xterm re-wraps each full-width line and inserts a PHANTOM blank
+  line ⇒ 54 spurious newlines ⇒ everything below shifts ⇒ garble. Arithmetic,
+  not theory.
+- CC runs in the NORMAL buffer (`alternate_on=0` for all 4 panes), i.e. it is a
+  differential renderer with a row model. After the shifted replay its model no
+  longer matches the xterm, so its next partial redraw lands at wrong rows.
+- NO REPAIR PATH: both tabs are 2 panes @ 94x53 ⇒ a switch computes an IDENTICAL
+  grid key ⇒ `pushGrid` change-guard early-returns (store.ts:428) ⇒
+  `scheduleResync()` is never reached ⇒ no auto-^L. Exactly why it garbles
+  "even without resizing": the iteration-#5 ^L masked this during resize tests
+  but a same-count tab switch issues ZERO tmux commands.
+- Note: this is the SAME capture-replay mechanism already abandoned for resync
+  in iteration #5 ("only the app can repaint its own screen") — warm_start still
+  runs it on every tab switch.
+
+## ROOT CAUSE #7 (mode 6 — "rapid pane close double-^L hits Claude")
+Confirmed from /tmp/cockpit-dbg.log WITHOUT user repro: 75 `send-keys -l '\u{c}'`
+in one session, incl. back-to-back duplicates to the SAME pane (%14 twice, %16
+twice) and fan-out to panes in BOTH tmux windows (%7 %15 @2, %14 %16 @5).
+- `scheduleResync()` runs after EVERY successful `pushGrid`; its 320ms debounce
+  only coalesces pushes closer than 320ms. Closing panes quickly ⇒ several
+  pushes ⇒ several broadcasts ⇒ several ^L per pane.
+- `cockpit:resync` is a WINDOW event, so every mounted XtermHost sends ^L to its
+  own pane — the repair is fired at panes that never needed it.
+- Mechanism is unsound in principle: injecting keystrokes into a live
+  interactive session is indistinguishable from the user typing. In Claude Code
+  ^L clears the rendered transcript. NOT a timing-constant bug — do not tune
+  RESYNC_QUIET_MS/RESYNC_MAX_WAIT_MS.
+
+## STATUS 2026-07-20
+Iteration #5 still UNVERIFIED (YELLOW). #6/#7 are consequences of the two-grid
+architecture + the ^L band-aid. Proposed direction (needs user go/no-go, it is
+an architecture change): keep inactive tabs MOUNTED (hidden) so tab switch stops
+tearing down terminals and stops replaying captures; drop keystroke injection as
+a repair mechanism. Pending confirmation test: clear log, ONE bare tab switch —
+prediction: log stays EMPTY and the pane still garbles.
+
+## CONFIRMATION of #6/#7 (2026-07-20, user natural experiment)
+User: switching between the two 2-pane tabs → both garble and STAY garbled;
+switching to/from the 1-pane tab → still garbles but auto-heals. "It matters
+which tab I come back from." Live tmux + cleared log confirm the mechanism:
+  @5 dev-team panes=2 -> key 189x54/2/even-horizontal
+  @2 2.1.215  panes=2 -> key 189x54/2/even-horizontal   (IDENTICAL to @5)
+  @6 2.1.215  panes=1 -> key 192x54/1/even-horizontal
+Log for the session: 10 set_grid, alternating 192<->189 ONLY — i.e. every push
+involved the 1-pane tab; the 2<->2 switches emitted ZERO tmux commands.
+⇒ garble occurs on EVERY tab switch (warm_start replay, #6); the auto-^L masks
+it ONLY when the arriving tab's pane count differs from the last pushed key.
+Both root causes confirmed; no further repro needed.
+
+## ROOT CAUSE #8 (found while confirming — sizing targets the WRONG window)
+`select-layout` is issued with NO `-t` (engine/src/lib.rs:159) and NOTHING in
+the codebase ever issues `select-window` (grep: zero hits in src, crates,
+frontend; zero in the debug log). So tmux's current window is simply the
+last-created one (@6) and NEVER follows the cockpit tab the user is viewing.
+⇒ every `select-layout` re-tiles @6 regardless of which tab is displayed, and
+the displayed tab's window is never actually laid out. Live proof that windows
+do NOT share one size: @5 panes are 94x53 while @2 panes are 94x54 — the
+displayed tab's geometry is stale/accidental, set whenever it last happened to
+be tmux-current. `refresh-client -C` sets the CLIENT size (session-global)
+while `select-layout` acts per-window — the two halves of set_grid target
+different scopes.
+Correct shape: `window-size manual` + `resize-window -t <win>` +
+`select-layout -t <win>` so each tab's window is sized independently.
+
+## SPIKE 2026-07-20 — per-window sizing validated on tmux 3.6b (socket -L dbgtest)
+LANDMINE FOUND: `set-option -g window-size manual` (GLOBAL) makes the very next
+`new-window` **kill the tmux server** ("server exited unexpectedly"). Bisected
+command-by-command; control run (new-window without the option) stays ALIVE.
+The originally approved plan said `set -g window-size manual` — that would have
+killed the user's session on every new tab. DO NOT set window-size globally.
+WORKS instead — per-window, after the window exists:
+    set-option -w -t <win> window-size manual
+    resize-window  -t <win> -x <cols> -y <rows>
+    select-layout  -t <win> <layout>
+Verified WITH a real `-C attach` control client attached (client 80x):
+- attached client does NOT override manual per-window sizes (@0 111x33 and
+  @1 55x22 both held);
+- independent per-window resize works while attached;
+- `select-layout -t @0` while tmux current window is @1 correctly tiled @0
+  (two 55x33 panes) ⇒ targeted layout fixes #8 without needing select-window.
+⇒ `refresh-client -C` (session-global) is not needed at all; drop it.
+Note: spiking tmux in the sandbox needs a long-lived pane command
+(`new-session -d ... 'sleep 600'`) or the pane shell exits and takes the server
+with it; and zsh does NOT word-split unquoted vars (use "$@").
+
+## ITERATION #6 — implemented 2026-07-20 (user approved all three, full fix)
+Fixes #6 (tab-switch replay), #7 (^L injection), #8 (wrong-window sizing).
+
+BACKEND
+- `engine::set_grid(window_id, cols, rows, layout)` now emits, all targeted:
+      set-option -w -t <win> window-size manual
+      resize-window -t <win> -x <cols> -y <rows>
+      select-layout -t <win> <layout>
+  `refresh-client -C` is GONE from this path (it was the session-global coupling).
+  Command string split into pure `build_set_grid_cmd()` so its shape is testable.
+- 2 new engine tests: `set_grid_targets_exactly_one_window` (asserts every line
+  carries `-t @3`) and `set_grid_never_sets_window_size_globally` (asserts no
+  `set-option -g` — the tmux-3.6b server-killer — and no `refresh-client`).
+- `manager::set_grid` + the `set_grid` tauri command take `window_id`; the TEMP
+  DEBUG line now logs `win=`.
+
+FRONTEND
+- PaneGrid renders EVERY tab, stacked absolutely in a new `.pane-grid-stack`;
+  inactive grids are hidden with `visibility:hidden` + `pointer-events:none`.
+  NOT `display:none` — that measures 0x0, so background xterms could not fit and
+  would sit at the 80x24 default while tmux streamed full-width lines into them,
+  wrapping every line and accumulating garble in any tab not yet opened since
+  boot. `visibility` keeps the layout box, so background tabs stay fitted.
+- `store.panesForTab(tabId)` extracted; `activePanes()` delegates to it.
+- Single global `cellCols/cellRows` replaced by `cellByPane: Map<paneId,{cols,rows}>`.
+  Reason found while implementing: with tabs kept mounted, an arriving tab's
+  xterms are ALREADY fitted and so report nothing on switch — a last-writer
+  global would size the arriving window from the tab you just left (2-pane 94
+  vs 1-pane 192). `pushGrid` reads the active tab's own pane size from the map.
+- `reportCell(paneId, cols, rows)`: records EVERY pane (hidden included) but only
+  the active tab's panes may trigger a push, so a background tab re-fitting
+  cannot resize the window you are looking at.
+- `lastGridKey` (single string) → `lastGridKeyByWindow: Map`. The old global key
+  is what swallowed same-shape tab switches.
+- `switchTab` calls new `scheduleGridPush()` (60ms) — with tabs mounted nothing
+  else would size an arriving tab whose xterms did not change size.
+- `scheduleResync()` DELETED; XtermHost's `cockpit:resync` listener and its
+  `paneSendKeys(paneId,"\x0c")` DELETED, with a comment at both sites (and in
+  engine near `interrupt_pane`) recording why synthetic input is never a repair.
+
+VERIFIED SO FAR: cargo test --workspace 127 pass / 0 fail (was 125; +2 engine),
+tsc clean, vite build clean. NOT yet live-verified.
+
+FOLLOW-UPS (not done, out of approved scope)
+- `pane_resize` (engine/manager/tauri cmd) is now unreachable from the UI but
+  still contains a session-global `refresh-client -C` — a latent re-coupling.
+- `warm_start_screen` / `warmStartScreen` likewise unreachable (it existed only
+  for the abandoned capture-replay resync).
+- `cellByPane` entries are never evicted on pane death (tiny; overwritten on
+  re-mount of a reused id).
+
+## ITERATION #6 — two self-inflicted regressions caught in review, fixed pre-deploy
+1. FOCUS ROUTING. Tab switch used to destroy the outgoing tab's xterms, so the
+   focused textarea died with them. With tabs kept mounted a `visibility:hidden`
+   element can retain DOM focus in WebKit ⇒ after a KEYBOARD switch (⌘1-9, no
+   click) keystrokes would route to a pane in the tab just left — silent and
+   severe. XtermHost now drives focus from the store: a `createEffect` calls
+   `term.focus()` when this pane is both focusedPaneId and in the active tab,
+   and `term.blur()` if it still holds DOM focus while not.
+2. EMPTY-TAB UNMOUNT. The whole per-tab stack sat inside
+   `<Show when={hasActivePanes()}>`, so an active tab with zero panes would
+   unmount EVERY tab's terminals and the next switch would re-run warm_start —
+   resurrecting root cause #6. The stack now always renders; the empty-state is
+   an absolutely-positioned overlay (`.grid-empty-overlay`) instead of a
+   fallback.
+
+## DEPLOYED 2026-07-20 12:51 — iteration #6, awaiting live verify (YELLOW)
+Release binary built (`--features tauri/custom-protocol`), verified to contain
+`window-size manual` + `resize-window -t` and the new dist (index-DGpsE8xb);
+the ONE remaining `refresh-client -C` string is the now-unreachable pane_resize.
+Swapped into /Applications (unlink-then-copy, running process untouched) and
+signed per cc-cockpit-signing-ritual → `studio.arag.cc-cockpit`, team
+BN8BTA42RW, `codesign --verify --strict` OK.
+Suite: 127 rust tests pass / 0 fail; tsc clean; vite build clean.
+TEMP DEBUG deliberately still in tree + binary (kept for this verify round).
+USER MUST QUIT + RELAUNCH — a binary swap does not restart the process.
+
+## LIVE VERIFY CHECKLIST (iteration #6)
+a. Switch between the two SAME-pane-count tabs (dev-team ↔ the other 2-pane
+   tab) → no garble. This is the original repro that had NO repair path.
+b. ⌘1-9 switch WITHOUT clicking, then type → text must land in the VISIBLE
+   tab (regression guard for the focus fix).
+c. Close 3 panes fast, then `grep -c 'u{c}' /tmp/cockpit-dbg.log` → MUST be 0.
+   Claude's transcript must survive.
+d. Drag-resize + fullscreen toggle → app repaints itself, no manual ^L needed.
+e. `tmux -L cockpit list-windows -a -F '#{window_id} #{window_width}x#{window_height}'`
+   → tabs may now legitimately have DIFFERENT sizes; that is the fix working.
+If a-e pass: strip TEMP DEBUG (engine write_cmd + lib.rs set_grid), rebuild,
+re-sign, rerun suite, commit on a fresh branch off main.
