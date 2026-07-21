@@ -1,7 +1,12 @@
 # Resize/garble debugging — state doc
 
-**Date:** 2026-07-17 (FIVE root causes found + fixed; iteration #5 = auto-Ctrl+L)
-**Status:** YELLOW — iteration #5 built + installed + signed, NOT yet live-verified
+**Date:** 2026-07-17 → 2026-07-21 (EIGHT root causes over iterations #5-#6)
+**Status:** 🟢 GREEN — arc CLOSED, live-verified + merged `aef5008` on 2026-07-21.
+See the GREEN section at the end of this file for the final state. Everything
+below is the historical investigation log, kept for the evidence; the YELLOW /
+"pending verify" markers in it are POINT-IN-TIME and all superseded.
+
+**Historical status at the time of writing:** YELLOW — iteration #5 built + installed + signed, NOT yet live-verified
 (user must relaunch → fullscreen toggle + drag-resize + boot must self-heal).
 Session closed 2026-07-17 ~5:15pm before verify. TEMP DEBUG still in working
 tree AND installed binary. All changes UNCOMMITTED (on stale branch
@@ -194,7 +199,7 @@ twice) and fan-out to panes in BOTH tmux windows (%7 %15 @2, %14 %16 @5).
   RESYNC_QUIET_MS/RESYNC_MAX_WAIT_MS.
 
 ## STATUS 2026-07-20
-Iteration #5 still UNVERIFIED (YELLOW). #6/#7 are consequences of the two-grid
+Iteration #5 still UNVERIFIED at this point (YELLOW; later superseded — see GREEN section). #6/#7 are consequences of the two-grid
 architecture + the ^L band-aid. Proposed direction (needs user go/no-go, it is
 an architecture change): keep inactive tabs MOUNTED (hidden) so tab switch stops
 tearing down terminals and stops replaying captures; drop keystroke injection as
@@ -291,7 +296,7 @@ FRONTEND
   engine near `interrupt_pane`) recording why synthetic input is never a repair.
 
 VERIFIED SO FAR: cargo test --workspace 127 pass / 0 fail (was 125; +2 engine),
-tsc clean, vite build clean. NOT yet live-verified.
+tsc clean, vite build clean. NOT yet live-verified at this point (later verified — see GREEN section).
 
 FOLLOW-UPS (not done, out of approved scope)
 - `pane_resize` (engine/manager/tauri cmd) is now unreachable from the UI but
@@ -316,7 +321,7 @@ FOLLOW-UPS (not done, out of approved scope)
    an absolutely-positioned overlay (`.grid-empty-overlay`) instead of a
    fallback.
 
-## DEPLOYED 2026-07-20 12:51 — iteration #6, awaiting live verify (YELLOW)
+## DEPLOYED 2026-07-20 12:51 — iteration #6, awaiting live verify (YELLOW at the time; verified 2026-07-21)
 Release binary built (`--features tauri/custom-protocol`), verified to contain
 `window-size manual` + `resize-window -t` and the new dist (index-DGpsE8xb);
 the ONE remaining `refresh-client -C` string is the now-unreachable pane_resize.
