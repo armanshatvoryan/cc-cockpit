@@ -388,9 +388,12 @@ User-confirmed (visual, no instrumentation — stripped in 3b00c2b):
 The arc is closed. 8 root causes over iterations #5-#6.
 
 ## REMAINING (small, optional, NOT blocking)
-- `warm_start_screen` (+ `warmStartScreen` in ipc.ts) is unreachable dead code —
-  it existed only for the abandoned capture-replay resync. Safe to delete;
-  wants a reviewable commit of its own.
+- ~~`warm_start_screen` (+ `warmStartScreen` in ipc.ts) unreachable dead code~~
+  DONE 2026-07-21: removed (43 lines, 3 files) — the tauri command, its
+  `invoke_handler` registration, the `SessionManager` method, and the frontend
+  wrapper. `warm_start` (full scrollback) stays: it still runs on GENUINE first
+  mounts, which is the only replay path left now that tab switches keep their
+  terminals. `trim_blank_edges` + `WarmStartPayload` are shared and stay.
 - `pane_resize` is off the app's sizing path but NOT dead — `live_bridge.rs:77`
   calls it. It still contains the last session-global `refresh-client -C`; if
   live_bridge is ever retired, delete both together.

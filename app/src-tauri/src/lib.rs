@@ -283,20 +283,6 @@ fn warm_start(state: State<'_, AppState>, pane_id: String) -> Result<WarmStartPa
     Ok(WarmStartPayload { bytes_b64 })
 }
 
-/// Visible-screen-only replay for the post-resize re-sync (no scrollback). A
-/// shell leaves a trail of redrawn prompts in scrollback on resize; replaying the
-/// full history surfaces that garble. The visible grid is clean (= what Ctrl+L
-/// shows), so the re-sync replays just that.
-#[tauri::command]
-fn warm_start_screen(
-    state: State<'_, AppState>,
-    pane_id: String,
-) -> Result<WarmStartPayload, String> {
-    let mgr = state.mgr.lock().unwrap();
-    let bytes_b64 = mgr.warm_start_screen(&pane_id)?;
-    Ok(WarmStartPayload { bytes_b64 })
-}
-
 /// Inventory mission-control (P2-F1): the unified read-only browser of skills,
 /// subagents, plugins, and MCP servers across the global `~/.claude` scope and
 /// (when `project_path` is the active tab's cwd) the per-project `.claude/`
@@ -741,7 +727,6 @@ pub fn run() {
             interrupt_pane,
             list_state,
             warm_start,
-            warm_start_screen,
             load_inventory,
             toggle_plugin,
             plugin_toggle_preview,

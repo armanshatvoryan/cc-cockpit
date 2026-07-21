@@ -479,16 +479,6 @@ export function warmStart(paneId: string): Promise<WarmStartPayload> {
 }
 
 /**
- * Visible-screen-only replay for the post-resize re-sync (no scrollback). A shell
- * redraws its prompt on each resize and leaves the old one in scrollback;
- * replaying full history surfaces that garble. The visible grid is clean (what
- * Ctrl+L shows), so the re-sync replays just that.
- */
-export function warmStartScreen(paneId: string): Promise<WarmStartPayload> {
-  return invoke<WarmStartPayload>("warm_start_screen", { paneId });
-}
-
-/**
  * Per-worktree git status for a cwd (dev#2). Resolves to `null` when `cwd` is not
  * a git repo (the backend returns `Ok(None)`); rejects only if `git` is missing.
  */

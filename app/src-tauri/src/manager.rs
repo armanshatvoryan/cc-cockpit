@@ -843,24 +843,6 @@ impl SessionManager {
         }
     }
 
-    /// Like `warm_start` but the VISIBLE screen ONLY (no `-S -`, no scrollback).
-    /// Used by the post-resize re-sync: a SHELL redraws its prompt on every
-    /// SIGWINCH and leaves the old prompt in scrollback, so replaying the full
-    /// history (`warm_start`) surfaces a trail of accumulated prompts — exactly the
-    /// garble the user sees, which `Ctrl+L` cures by showing only the current
-    /// screen. tmux's VISIBLE grid is already clean at the settled width, so the
-    /// re-sync replays just that. (For a TUI like `claude` the visible grid is the
-    /// whole screen, so this stays correct there too — the original launch-garble
-    /// fix still holds.)
-    pub fn warm_start_screen(&self, pane_id: &str) -> Result<String, String> {
-        let out = tmux::tmux(&["capture-pane", "-p", "-e", "-t", pane_id])?;
-        if out.ok() {
-            Ok(B64.encode(trim_blank_edges(&out.stdout).as_bytes()))
-        } else {
-            Err(out.stderr.trim().to_string())
-        }
-    }
-
     /// Tear down: detach the control client, then kill the cockpit session on the
     /// PRIVATE socket only. NEVER `kill-server` (would also kill the default
     /// socket's server if mis-targeted — we always pass -L cockpit, but kill the
