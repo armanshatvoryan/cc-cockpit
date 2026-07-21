@@ -359,3 +359,37 @@ NOT deleted, deliberately: `pane_resize` is still called by
 it would break that binary. `warm_start_screen` IS unreachable (frontend +
 backend) but removing an exported tauri command is a separate reviewable change,
 left for the user to approve.
+
+## 🟢 GREEN — LIVE-VERIFIED + MERGED 2026-07-21
+Iteration #6 verified by the user on a real relaunch (app PID 16137, started
+after the 17:23 binary install) and merged to main as `aef5008` (PR #4).
+Branch `feat/resize-garble-fixes` deleted; docs split to PR #5 (`f8c605a`).
+
+Machine-checked evidence at verify time:
+- `@2`/`@6` carry `window-size=manual` PER-WINDOW; global `window-size` is still
+  `latest` and the server was alive after new windows ⇒ the `-g` crash landmine
+  is genuinely avoided in the shipped code.
+- Window sizes DIVERGED: `@2`/`@6` 192x54 vs `@11` 189x54. Baseline before
+  relaunch was ALL THREE pinned at 189x54 by the shared client viewport. This is
+  the single clearest proof root cause #8 is fixed — it was impossible before.
+
+User-confirmed (visual, no instrumentation — stripped in 3b00c2b):
+1. tab switch between same-pane-count tabs → NO garble (the original repro).
+2. ⌘1-9 switch without clicking, then type → lands in the VISIBLE tab
+   (the focus `createEffect` works; WebKit hidden-focus trap avoided).
+3. rapid pane close → Claude Code's transcript SURVIVES (root cause #7 dead).
+4. drag-resize + fullscreen → app repaints itself, no manual Ctrl+L needed.
+
+The arc is closed. 8 root causes over iterations #5-#6.
+
+## REMAINING (small, optional, NOT blocking)
+- `warm_start_screen` (+ `warmStartScreen` in ipc.ts) is unreachable dead code —
+  it existed only for the abandoned capture-replay resync. Safe to delete;
+  wants a reviewable commit of its own.
+- `pane_resize` is off the app's sizing path but NOT dead — `live_bridge.rs:77`
+  calls it. It still contains the last session-global `refresh-client -C`; if
+  live_bridge is ever retired, delete both together.
+- `cellByPane` entries are never evicted on pane death (bounded, tiny; a reused
+  pane id overwrites its entry on remount).
+- Engine still swallows tmux `%error` frames (fire-and-forget) — pre-existing,
+  unrelated to this arc, worth its own pass.
