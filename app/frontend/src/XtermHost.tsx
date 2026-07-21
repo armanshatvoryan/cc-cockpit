@@ -12,7 +12,7 @@
 //   ResizeObserver -> fit()      ->  paneResize(...)           (resize)
 //   onCleanup                    ->  term.dispose() + unlisten (HMR/kill safe)
 
-import { onCleanup, onMount, type Component } from "solid-js";
+import { createEffect, onCleanup, onMount, type Component } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -20,10 +20,9 @@ import {
   onPaneData,
   paneSendKeys,
   warmStart,
-  warmStartScreen,
   type PaneDataPayload,
 } from "./ipc";
-import { reportCell } from "./store";
+import { activePanes, focusedPaneId, reportCell } from "./store";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export interface XtermHostProps {
@@ -73,8 +72,19 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     // Initial fit + report our cell size to the grid coordinator (the single
     // window-size authority). Per-pane resize is gone — it collapsed multi-pane
     // tabs to 1 column.
-    fit.fit();
-    reportCell(term.cols, term.rows);
+    //
+    // A pane belonging to a NON-active tab now mounts too (tabs are kept mounted
+    // so switching never destroys a terminal). Those hosts are hidden with
+    // `visibility`, so they DO have a layout box and fit normally — the guard is
+    // for the genuinely unmeasurable cases (mount before layout, collapsed
+    // sidebar), where fit() throws on a 0x0 box. The ResizeObserver below picks
+    // those up as soon as the element has a size.
+    let everReported = false;
+    if (hostEl.clientWidth > 0 && hostEl.clientHeight > 0) {
+      fit.fit();
+      reportCell(paneId, term.cols, term.rows);
+      everReported = true;
+    }
 
     // Output: write decoded bytes verbatim (xterm is a full VT emulator).
     let unlistenData: UnlistenFn | undefined;
@@ -117,47 +127,49 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
         // Skip when the host is hidden (display:none -> 0x0 -> fit throws).
         if (hostEl.clientWidth === 0 || hostEl.clientHeight === 0) return;
         fit.fit();
-        if (term.cols !== lastCols || term.rows !== lastRows) {
+        // `!everReported` covers a pane that mounted hidden: its very first real
+        // fit must be reported even if it happens to land on xterm's 80x24
+        // default, or the tab would never size its tmux window.
+        if (!everReported || term.cols !== lastCols || term.rows !== lastRows) {
           lastCols = term.cols;
           lastRows = term.rows;
-          reportCell(term.cols, term.rows);
+          everReported = true;
+          reportCell(paneId, term.cols, term.rows);
         }
       }, 50);
     });
     ro.observe(hostEl);
 
-    // Re-sync to tmux's authoritative grid after a pane resize (see
-    // store.scheduleResync). xterm's own reflow leaves the old, wider frame
-    // wrapped + scattered; tmux holds the pane's clean grid re-rendered at the new
-    // width, so wipe xterm and replay it. This is the automated form of the Ctrl+L
-    // the user would otherwise press.
-    //
-    // Replay the VISIBLE screen ONLY (`warmStartScreen`), NOT the scrollback: a
-    // shell redraws its prompt on every SIGWINCH and leaves the old prompt in
-    // scrollback, so replaying full history (`warmStart`) dumps a trail of
-    // accumulated prompts back into xterm — the exact "adds new lines every ⌘B/⌘D"
-    // garble. The visible grid is clean (it's what Ctrl+L shows), so replay that.
-    // (Mount still uses full-scrollback `warmStart` to restore a re-attached
-    // pane's history.) Guard the hidden case (0×0) and the unmount race.
-    const onResync = () => {
-      if (disposed || hostEl.clientWidth === 0 || hostEl.clientHeight === 0)
-        return;
-      warmStartScreen(paneId)
-        .then((w) => {
-          if (disposed || !w.bytesB64) return;
-          term.reset();
-          term.write(b64ToBytes(w.bytesB64));
-        })
-        .catch(() => {});
-    };
-    window.addEventListener("cockpit:resync", onResync);
+    // Focus routing. Previously a tab switch DESTROYED the outgoing tab's
+    // xterms, so the focused textarea died with them and focus landed on the new
+    // tab by construction. Tabs now persist, and a `visibility:hidden` element
+    // can keep DOM focus in WebKit — so after a keyboard switch (⌘1-9, which
+    // never touches the mouse) keystrokes would silently route to a pane in the
+    // tab the user just left. Drive focus from the store instead of relying on
+    // xterm's click handler.
+    createEffect(() => {
+      const isFocusedPane = focusedPaneId() === paneId;
+      const isVisible = activePanes().some((p) => p.paneId === paneId);
+      if (isFocusedPane && isVisible) {
+        term.focus();
+      } else if (hostEl.contains(document.activeElement)) {
+        // We still hold DOM focus but are no longer the focused/visible pane —
+        // release it rather than swallowing the user's keystrokes.
+        term.blur();
+      }
+    });
+
+    // NOTE: no post-resize repair step here. Iteration #5 listened for a
+    // `cockpit:resync` broadcast and sent a synthetic Ctrl+L; tmux cannot tell
+    // that from the user typing it, and in Claude Code it wipes the rendered
+    // transcript (root cause #7). A resize is now just a resize — the app
+    // repaints itself on SIGWINCH, as under any other terminal emulator.
 
     // Teardown — critical for HMR (else leaked WebGL contexts) and pane kill.
     onCleanup(() => {
       disposed = true;
       if (resizeTimer) clearTimeout(resizeTimer);
       ro.disconnect();
-      window.removeEventListener("cockpit:resync", onResync);
       dataSub.dispose();
       unlistenData?.();
       term.dispose();

@@ -35,3 +35,6 @@ __pycache__/
 
 # ── Temp render artifacts ──
 _p*.png
+
+# graphify code knowledge-graph output (regenerable: graphify update .)
+graphify-out/

@@ -122,9 +122,28 @@ impl Parser {
     }
 
     fn handle_line(&mut self, raw: Vec<u8>) {
-        // A control-mode notification line is ASCII up to its payload. `%output`
-        // payload may carry escaped non-ASCII, but the *escapes* are ASCII, so
-        // lossy UTF-8 for routing is safe; the octal decoder works on bytes.
+        // `%output` FIRST, at the byte level. tmux octal-escapes only C0
+        // controls and backslash in the payload — high bytes pass through RAW,
+        // so a UTF-8 char split across pty reads arrives as invalid raw bytes.
+        // A lossy String round-trip would replace those with U+FFFD before
+        // `decode_octal` ever ran (rendered as "��"), so the payload must never
+        // touch a String. Dispatched before the block check to match the old
+        // routing (a `%`-line mid-block was dispatched, not body text).
+        if let Some(rest) = raw.strip_prefix(b"%output ") {
+            let (pane, data) = match rest.iter().position(|&b| b == b' ') {
+                Some(i) => (&rest[..i], &rest[i + 1..]),
+                None => (rest, &rest[rest.len()..]),
+            };
+            let ev = Event::Output {
+                pane_id: String::from_utf8_lossy(pane).into_owned(),
+                data: decode_octal(data),
+            };
+            self.emit(ev);
+            return;
+        }
+
+        // Every other notification line is ASCII up to its payload, so lossy
+        // UTF-8 for routing is safe.
         let line = String::from_utf8_lossy(&raw).into_owned();
 
         // Inside a reply block, non-`%` lines are body text (e.g. the error
@@ -357,6 +376,32 @@ fn parse_three_u64(s: &str) -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_passes_raw_invalid_utf8_bytes_untouched() {
+        // tmux 3.6b octal-escapes only C0 controls and backslash in %output —
+        // high bytes pass through RAW (verified live). A UTF-8 char split
+        // across pty reads therefore arrives as invalid raw bytes, one half
+        // per %output line. The parser must hand those bytes through untouched;
+        // a lossy String round-trip replaces them with U+FFFD (EF BF BD) and
+        // the terminal renders "��" (the emoji/em-dash garble).
+        let mut p = Parser::new();
+        // 🚨 = F0 9F 9A A8, split 2+2; second read also carries escaped CR LF.
+        let mut evs = p.feed(b"%output %0 \xF0\x9F\n");
+        evs.extend(p.feed(b"%output %0 \x9A\xA8\\015\\012\n"));
+        let datas: Vec<Vec<u8>> = evs
+            .iter()
+            .filter_map(|e| match e {
+                Event::Output { pane_id, data } if pane_id == "%0" => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            datas,
+            vec![vec![0xF0, 0x9F], vec![0x9A, 0xA8, 0x0D, 0x0A]],
+            "raw high bytes must survive the parser byte-exact"
+        );
+    }
 
     #[test]
     fn octal_decode_core_controls() {

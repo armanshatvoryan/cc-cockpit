@@ -238,13 +238,38 @@ button {
 
 /* ── PaneGrid ───────────────────────────────────────────────────────────────── */
 
-.pane-grid {
+/* Every tab's grid is rendered and stacked here; only the active one is visible.
+   Tabs are never unmounted, so switching cannot tear down a terminal (and so
+   cannot trigger the lossy capture-pane replay that garbled panes on switch). */
+.pane-grid-stack {
   flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+}
+
+.pane-grid {
+  position: absolute;
+  inset: 0;
   display: grid;
   gap: 3px;
   padding: 3px;
   grid-auto-rows: 1fr;
   min-height: 0;
+  background: var(--bg-0);
+}
+
+/* Hidden but still laid out, so its xterms keep fitting to the real viewport
+   and stay in sync with their tmux panes while in the background. */
+.pane-grid-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Shown when the ACTIVE tab has no panes. An overlay rather than a fallback, so
+   the other tabs' terminals stay mounted underneath it. */
+.grid-empty-overlay {
+  position: absolute;
+  inset: 0;
   background: var(--bg-0);
 }
 
