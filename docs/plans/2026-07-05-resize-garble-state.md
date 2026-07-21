@@ -339,3 +339,23 @@ e. `tmux -L cockpit list-windows -a -F '#{window_id} #{window_width}x#{window_he
    → tabs may now legitimately have DIFFERENT sizes; that is the fix working.
 If a-e pass: strip TEMP DEBUG (engine write_cmd + lib.rs set_grid), rebuild,
 re-sign, rerun suite, commit on a fresh branch off main.
+
+## TEMP DEBUG STRIPPED 2026-07-21 (user request, before live verify)
+Both instrumentation blocks removed: engine `write_cmd` and the `set_grid`
+tauri command. `rg 'TEMP DEBUG|cockpit-dbg'` over src+crates+frontend is clean.
+Also corrected the engine module header, which still described `pane_resize`
+(`refresh-client -C`) as the sizing path — `set_grid` is, and pane_resize is now
+only reachable from the `live_bridge` dev binary.
+
+CONSEQUENCE FOR VERIFY: checklist item (c) can no longer be proven from
+/tmp/cockpit-dbg.log (nothing writes it now). #7 is verified by the SYMPTOM
+instead — close 3 panes fast and Claude's rendered transcript must survive.
+That is the ground truth the log was standing in for. If a regression needs
+diagnosing later, re-add the two blocks (see commit ae921f0^..ae921f0 for the
+exact shape) and rebuild.
+
+NOT deleted, deliberately: `pane_resize` is still called by
+`app/src-tauri/src/bin/live_bridge.rs:77`, so it is NOT dead code and removing
+it would break that binary. `warm_start_screen` IS unreachable (frontend +
+backend) but removing an exported tauri command is a separate reviewable change,
+left for the user to approve.

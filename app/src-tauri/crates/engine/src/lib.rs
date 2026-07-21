@@ -7,8 +7,12 @@
 //!   * route decoded `%output` to a sink as `PaneData { pane_id, bytes_b64 }`
 //!     (base64, as the bridge requires) and topology events to a callback;
 //!   * write input back to the control client's stdin via `pane_send_keys`
-//!     (`send-keys -t <pane> -l <data>`, literal) and `pane_resize`
-//!     (`resize-pane`/`refresh-client -C`).
+//!     (`send-keys -t <pane> -l <data>`, literal) and size windows via
+//!     `set_grid` (`resize-window`/`select-layout`, both `-t`-targeted).
+//!
+//! `pane_resize` still exists for the `live_bridge` dev binary but is no longer
+//! on the app's sizing path: its `refresh-client -C` sets the session-global
+//! CLIENT size, which coupled every tab to one geometry (root cause #8).
 //!
 //! Tauri's `tauri::AppHandle::emit` and `tauri::command` are intentionally NOT
 //! referenced here so this whole engine compiles + runs without Tauri. The
@@ -180,17 +184,6 @@ impl ControlClient {
     }
 
     fn write_cmd(&mut self, cmd: &str) -> Result<(), EngineError> {
-        // TEMP DEBUG (remove): trace every control-mode command written.
-        {
-            use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/cockpit-dbg.log")
-            {
-                let _ = writeln!(f, "[eng {}] write_cmd {:?}", std::process::id(), cmd);
-            }
-        }
         self.stdin
             .write_all(cmd.as_bytes())
             .map_err(EngineError::Write)?;

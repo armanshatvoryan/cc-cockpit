@@ -255,20 +255,6 @@ fn set_grid(
     rows: u16,
     layout: String,
 ) -> Result<(), String> {
-    // TEMP DEBUG (remove): trace grid pushes from the webview.
-    {
-        use std::io::Write as _;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/cockpit-dbg.log")
-        {
-            let _ = writeln!(
-                f,
-                "[cmd] set_grid win={window_id} cols={cols} rows={rows} layout={layout}"
-            );
-        }
-    }
     let mut mgr = state.mgr.lock().unwrap();
     mgr.set_grid(&window_id, cols, rows, &layout)
 }
