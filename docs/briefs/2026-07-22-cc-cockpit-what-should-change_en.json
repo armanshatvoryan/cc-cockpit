@@ -1,0 +1,74 @@
+{
+  "title": "cc-cockpit<br><span class=\"accent\">What Should Change</span>",
+  "subtitle": "A product review of the Claude Code cockpit, scored on one question: does it tell you what your agents are doing, or only that they are alive?",
+  "cover": {
+    "monogram": "C",
+    "org": "cc-cockpit<br>Internal product review",
+    "presented_by": "Review lens: <b>Nate Herk</b> persona (agent-tooling practitioner), applied to the live repo",
+    "metrics": [
+      { "value": "5", "label": "States per pane" },
+      { "value": "8", "label": "Garble root causes" },
+      { "value": "1<span class=\"u\">/3</span>", "label": "Terax deltas shipped" }
+    ],
+    "footnote": "Prepared 22 July 2026  ·  Internal  ·  Repo at main 5c7630a"
+  },
+  "doc_meta": {
+    "rows": [
+      { "label": "Subject", "value": "cc-cockpit (Tauri + SolidJS + xterm.js over tmux)" },
+      { "label": "State", "value": "v0.1.1, installed and signed; garble arc closed at 8 root causes" },
+      { "label": "Question", "value": "What is missing, judged as a tool by an AI user for AI users" },
+      { "label": "Prepared", "value": "22 July 2026" }
+    ]
+  },
+  "verdict_headline": "Reshape, not kill. You built a window manager for agents where the job is a monitor.",
+  "verdict_sub": "The multiplexing backbone is genuinely done. But every pane still reports as one of five colours, and almost everything worth adding rides on the polling loop that already runs. Stop shipping terminal features; ship the read-only surfaces.",
+  "hero_numbers": [
+    { "value": "5", "label": "States per pane", "note": "All the cockpit tells you, distilled from a 120-line capture" },
+    { "value": "0", "label": "Cost surface", "note": "N agents running concurrently, no burn visible anywhere" },
+    { "value": "8", "label": "Seam fixes", "note": "Root causes spent on the tmux/xterm grid seam, now closed" },
+    { "value": "1/3", "label": "Terax deltas", "note": "Dock badge shipped; palette and context chips still open" }
+  ],
+  "tier_ladder": [
+    { "rank": 1, "source": "Last-action line per pane", "tier": "Tier 1", "why": "Rides the poll that already runs. This is the 48-hour test." },
+    { "rank": 2, "source": "Cost and context burn per pane", "tier": "Tier 1", "why": "Needs a new data source; the spinner counter is not context usage." },
+    { "rank": 3, "source": "Hand off and restart a pane", "tier": "Tier 1", "why": "Removes the reason closing a pane feels dangerous." },
+    { "rank": 4, "source": "Per-pane permission scoping", "tier": "Tier 2", "why": "Keys, not prompts. A host is the correct layer for this." },
+    { "rank": 5, "source": "Proof of what a session changed", "tier": "Tier 2", "why": "A green dot means stopped typing, not done." },
+    { "rank": 6, "source": "Agent-operable control surface", "tier": "Tier 2", "why": "Built for AI users, yet nothing but a human can drive it." },
+    { "rank": 7, "source": "Cross-pane search and history", "tier": "Tier 3", "why": "Eight panes and no way to ask which one touched auth." },
+    { "rank": 8, "source": "Cmd-P command palette", "tier": "Tier 3", "why": "Your own Terax teardown ranked it second. Open since 7 July." }
+  ],
+  "charts": [
+    {
+      "id": "coverage",
+      "type": "barh",
+      "title": "What an agent host needs, and where cc-cockpit stands today",
+      "x_label": "Coverage today  (1 missing  ·  2 partial  ·  3 built)",
+      "value_suffix": "",
+      "items": [
+        { "label": "Multiplexing: tabs, panes, tmux backbone", "value": 3, "color": 1 },
+        { "label": "Status glance: 5 states + dock badge", "value": 3, "color": 1 },
+        { "label": "Repo context: branch + dirty on the tab", "value": 2, "color": 2 },
+        { "label": "Decision visibility: what a pane is doing", "value": 1, "color": 3 },
+        { "label": "Cost and context burn per pane", "value": 1, "color": 3 },
+        { "label": "Session handoff and restart", "value": 1, "color": 3 },
+        { "label": "Proof of what a session changed", "value": 1, "color": 3 },
+        { "label": "Per-pane permission scoping", "value": 1, "color": 3 },
+        { "label": "Agent-operable control surface", "value": 1, "color": 3 },
+        { "label": "Cross-pane search and history", "value": 1, "color": 3 }
+      ],
+      "legend": [
+        { "color": "navy", "label": "Built" },
+        { "color": "gold", "label": "Partial" },
+        { "color": "blue_l", "label": "Missing" }
+      ]
+    }
+  ],
+  "ui": {
+    "kicker": "cc-cockpit · Product Review",
+    "tag": "INTERNAL BRIEF",
+    "ladder_title": "What to change, in order",
+    "footer": "cc-cockpit — What Should Change"
+  },
+  "body_markdown": "## What you actually built\n\nTabs, panes, a docked file tree, a status dot per pane and a dock bounce when something needs you. That is real work, and the eight-root-cause arc that made the terminal stop garbling was real engineering.\n\nBut judged as a tool for someone running several Claude Code sessions at once, it sits in the same category as the pixel-art agent monitors: it tells you an agent is **active or idle**. It does not tell you what that agent is **building or deciding**. The gap in agent tooling was never visual polish, it is visibility into decisions early enough to catch them going wrong.\n\nEverything below is scored on one axis: does the change move you closer to a monitor.\n\n{{CHART:coverage}}\n\n## The three that matter\n\n### 1. You poll every pane and discard almost all of it\n\nEach poll pulls roughly the last 120 lines of every pane and collapses the whole thing into a five-way state: idle, working, needs input, dead, unknown. Five colours out of a page of text.\n\nWhat is actually wanted off that same poll is one line per pane: last action, last file touched, last decision. *Editing store.ts. About to run a migration. Waiting on approval, four minutes.* The value is looking at eight panes and seeing which one is quietly going the wrong way before it finishes going there.\n\n::: note | One caveat you proved yourself\nThe capture used for this is lossy. That was root cause #6 of your own garble arc: it hard-wraps at pane width and drops the soft-wrap markers. For a live status strip that matters far less than it did for replay, but design it knowing the source occasionally lies, and keep the honest **unknown** state you already have.\n:::\n\n### 2. There is no cost surface, and you run several agents at once\n\nIn a single terminal you feel token burn. Across six panes you feel nothing until you hit a wall. That problem exists only inside this product, which makes it yours to solve: burn per pane, a session total, and how much of the daily allowance has gone.\n\n::: gap | The plumbing is not free, despite appearances\nThe status parser already matches `25s · 31.7k tokens` in the spinner line. That is the **per-turn streamed counter, not context-window occupancy** — two different numbers. A real context bar has to read the session transcript or the context command instead. Worth building, but do not budget it as an evening because the regex already exists.\n:::\n\n### 3. No handoff, so a full pane is a dead pane\n\nA session handoff is four sentences: decisions locked, key files, running state, open questions, written before the context is cleared so the reset costs nothing. This matters more than it sounds, because model quality degrades well before the window is full.\n\nThe cockpit is the natural home for that button, because it is the only layer that knows every live pane, its repo, its branch and its git state. **Hand off and restart this pane** is the feature. Note what it fixes downstream: closing panes felt dangerous, and an entire debugging arc went into a keystroke that was eating transcripts. The user-level version of that fear is *I will lose the session*. This removes it.\n\n## The second tier\n\n| Change | Why it belongs to the host, not to Claude Code |\n|---|---|\n| Per-pane permission scoping | Keys, not prompts. Assume that whatever an agent technically can reach, it eventually will. Several sessions currently run in one window with identical reach. |\n| Proof of what a session changed | An agent reporting done is a claim, not proof. Branch, dirty state and ahead/behind are already computed and spent on a cosmetic chip. |\n| Agent-operable control surface | A tool for AI users that only a human can drive. Spawn a pane, read a pane, report state. |\n| Cross-pane search | Eight sessions and no way to ask which of them touched auth this week. |\n| Cmd-P palette | Your own Terax teardown ranked the top three deltas: dock badge, palette, composer context chips. The badge shipped. The palette has been open since 7 July. |\n\n## What to stop\n\nTerminal-seam work. The garble arc is closed at eight root causes and live-verified. Further polish there moves nothing a user can feel.\n\n## Attach a number before building anything\n\nThe project has never had a KPI, which is why feature choice has been driven by what broke rather than what matters. Constraint first, KPI second, build third.\n\nThe honest KPI here is **minutes between a pane needing you and you noticing**. Every change in the ladder moves it. Seam work does not.\n\n## The cheapest 48-hour test\n\nOne change, then a week of ordinary work as the measurement.\n\n1. **Build only the last-action line.** One row under each pane header, fed by the poll that already runs. No cost bar, no handoff button, no palette.\n2. **Change nothing else for a week.** Use the cockpit for real sessions exactly as you do now.\n3. **Watch one behaviour: do you still tab into every pane to check on it?**\n\nStill tabbing in means the read-only surface is not rich enough yet, and the answer is more of it: the file being touched, the pending approval, the elapsed time. If you stop tabbing in, the direction is confirmed and the rest of the ladder is worth building in order.\n\n::: verdict | Bottom line\n**Reshape.** Keep the backbone, change the product. The multiplexing works; the reporting does not.\n\nEvery item in the ladder comes from one fact: the cockpit already watches every pane and tells you almost nothing about what it sees. Close that before another feature gets built, and stop counting terminal fixes as progress.\n\nOne business note: this is the strongest piece of proof-of-work in the portfolio and nobody outside this machine has seen it. The plan of record already calls for documenting the build work in English. This is the footage.\n:::\n"
+}

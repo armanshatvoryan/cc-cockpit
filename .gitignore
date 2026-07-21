@@ -36,5 +36,8 @@ __pycache__/
 # ── Temp render artifacts ──
 _p*.png
 
+# brief chart PNGs (regenerable: render_brief.py from the sibling content JSON)
+docs/briefs/**/charts/
+
 # graphify code knowledge-graph output (regenerable: graphify update .)
 graphify-out/
