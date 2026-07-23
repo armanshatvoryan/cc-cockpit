@@ -17,6 +17,7 @@ pub mod gitstatus;
 pub mod inventory;
 pub mod manager;
 pub mod persist;
+pub mod settings;
 pub mod status;
 pub mod teamruns;
 pub mod templates;
@@ -710,6 +711,7 @@ pub fn run() {
     repair_locale_for_gui();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             cockpit_init,
@@ -747,8 +749,19 @@ pub fn run() {
             break_pane,
             persist::save_layout,
             persist::load_layout,
+            settings::load_settings,
+            settings::save_settings,
+            settings::effective_default_cwd,
             gitstatus::git_status_snapshot,
         ])
+        .setup(|app| {
+            // Must run before the frontend's `cockpit_init` reaches
+            // `ensure_healthy_session`, which bakes the start directory into the
+            // bootstrap tmux session. Best-effort — a bad settings file leaves
+            // the built-in default in place rather than blocking boot.
+            settings::apply_at_startup(app.handle());
+            Ok(())
+        })
         .on_window_event(|window, event| {
             // ⌘W (and the red close button) fire CloseRequested, which would close
             // the whole window — the user's whole cockpit — on a single keystroke.

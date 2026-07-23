@@ -13,6 +13,7 @@ import {
   clearError,
   sidebarVisible,
   ftInitHome,
+  settingsOpen,
 } from "./store";
 import { installKeyboard } from "./keyboard";
 import { TabBar } from "./components/TabBar";
@@ -21,6 +22,7 @@ import { FileTreePanel } from "./components/FileTreePanel";
 import { InventoryPanel } from "./components/InventoryPanel";
 import { TeamBoardPanel } from "./components/TeamBoardPanel";
 import { SpinupDialog } from "./components/SpinupDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
 
 export const App: Component = () => {
   onMount(() => {
@@ -75,7 +77,8 @@ export const App: Component = () => {
                 {store.panes.length} pane{store.panes.length === 1 ? "" : "s"}
               </span>
               <span class="footer-keys">
-                ⌘B files · ⌘T tab · ⌘1-9 switch · ⌘D split · ⌘I inventory · ⌘⇧T teams
+                ⌘B files · ⌘T tab · ⌘1-9 switch · ⌘D split · ⌘I inventory · ⌘⇧T
+                teams · ⌘, settings
               </span>
             </footer>
           </div>
@@ -84,6 +87,9 @@ export const App: Component = () => {
         <InventoryPanel />
         <TeamBoardPanel />
         <SpinupDialog />
+        <Show when={settingsOpen()}>
+          <SettingsDialog />
+        </Show>
       </Show>
 
       <Show when={store.error}>

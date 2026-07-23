@@ -14,25 +14,70 @@
 //! the default socket (native CC's `cockpit` session lives there).
 
 use std::process::Command;
+use std::sync::RwLock;
 
 /// The private tmux socket name. NEVER the default socket.
 pub const SOCKET: &str = "cockpit";
 /// The single cockpit session that holds all tabs (windows) and panes.
 pub const SESSION: &str = "cockpit-main";
-/// Directory (under $HOME) where new tabs and the bootstrap session start.
-/// Finder-launched apps inherit cwd `/`, so without an explicit `-c` every
-/// fresh pane opened at the filesystem root.
+/// Fallback directory (under $HOME) where new tabs and the bootstrap session
+/// start when the user has configured nothing. Finder-launched apps inherit cwd
+/// `/`, so without an explicit `-c` every fresh pane opened at the filesystem
+/// root. This is the author's own layout; it is a FALLBACK, not a rule — an
+/// install on a machine without `~/Workflows` lands on `$HOME` instead.
 pub const DEFAULT_DIR_UNDER_HOME: &str = "Workflows";
 
-/// Start directory for new sessions/tabs: `$HOME/Workflows` when it exists,
-/// else `$HOME`, else `/` (no HOME — shouldn't happen in a GUI launch).
+/// The user-configured start directory, or `None` when unset.
+///
+/// `default_cwd` is a free fn called from both the boot path (`ensure_session`)
+/// and per-tab (`SessionManager::create_tab`), neither of which holds an
+/// `AppHandle` — but the persisted preference lives in `app_config_dir`, which
+/// needs one. Process-global state is the seam between the two: Tauri's `setup`
+/// hook loads the file once (see `settings::apply_at_startup`) and the settings
+/// dialog re-sets it on save, so a change takes effect without a restart.
+static CONFIGURED_CWD: RwLock<Option<String>> = RwLock::new(None);
+
+/// Install the configured start directory. `None` clears it (revert to default).
+/// Poisoned-lock safe: a panic elsewhere must not brick tab creation.
+pub fn set_configured_cwd(dir: Option<String>) {
+    let mut guard = match CONFIGURED_CWD.write() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *guard = dir.filter(|d| !d.trim().is_empty());
+}
+
+/// Read the configured start directory.
+fn configured_cwd() -> Option<String> {
+    match CONFIGURED_CWD.read() {
+        Ok(g) => g.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// Start directory for new sessions/tabs, in order: the user-configured dir (if
+/// it still exists), else `$HOME/Workflows` (if it exists), else `$HOME`, else
+/// `/` (no HOME — shouldn't happen in a GUI launch).
+///
+/// The existence gate on the configured path is deliberate: a user who renames
+/// or deletes the folder they picked gets a working cockpit rooted at `$HOME`,
+/// not a tmux that refuses to spawn a pane into a missing `-c` directory.
 pub fn default_cwd() -> String {
-    default_cwd_impl(std::env::var("HOME").ok(), |p| {
+    default_cwd_impl(configured_cwd(), std::env::var("HOME").ok(), |p| {
         std::path::Path::new(p).is_dir()
     })
 }
 
-fn default_cwd_impl(home: Option<String>, is_dir: impl Fn(&str) -> bool) -> String {
+fn default_cwd_impl(
+    configured: Option<String>,
+    home: Option<String>,
+    is_dir: impl Fn(&str) -> bool,
+) -> String {
+    if let Some(c) = configured {
+        if is_dir(&c) {
+            return c;
+        }
+    }
     match home {
         Some(h) => {
             let preferred = format!("{h}/{DEFAULT_DIR_UNDER_HOME}");
@@ -216,10 +261,73 @@ mod tests {
     fn default_cwd_prefers_workflows_then_home_then_root() {
         let home = Some("/Users/u".to_string());
         assert_eq!(
-            default_cwd_impl(home.clone(), |p| p == "/Users/u/Workflows"),
+            default_cwd_impl(None, home.clone(), |p| p == "/Users/u/Workflows"),
             "/Users/u/Workflows"
         );
-        assert_eq!(default_cwd_impl(home, |_| false), "/Users/u");
-        assert_eq!(default_cwd_impl(None, |_| true), "/");
+        assert_eq!(default_cwd_impl(None, home, |_| false), "/Users/u");
+        assert_eq!(default_cwd_impl(None, None, |_| true), "/");
+    }
+
+    #[test]
+    fn configured_cwd_wins_over_workflows_and_home() {
+        let home = Some("/Users/u".to_string());
+        assert_eq!(
+            default_cwd_impl(Some("/Users/u/Code".into()), home, |_| true),
+            "/Users/u/Code"
+        );
+    }
+
+    #[test]
+    fn stale_configured_cwd_falls_back_instead_of_breaking_tmux() {
+        // The user picked a folder, then deleted or renamed it. tmux would
+        // refuse `-c <missing dir>`, so the chain must skip it silently.
+        let home = Some("/Users/u".to_string());
+        assert_eq!(
+            default_cwd_impl(Some("/Users/u/Gone".into()), home.clone(), |p| p
+                == "/Users/u/Workflows"),
+            "/Users/u/Workflows"
+        );
+        assert_eq!(
+            default_cwd_impl(Some("/Users/u/Gone".into()), home, |_| false),
+            "/Users/u"
+        );
+    }
+
+    /// Everything that touches the `CONFIGURED_CWD` global lives in ONE test on
+    /// purpose: `cargo test` runs tests in parallel threads of a single process,
+    /// so two tests mutating the same static would race and flake.
+    ///
+    /// The mocked-`is_dir` tests above cover the branch logic; this drives the
+    /// REAL `default_cwd()` against the REAL filesystem, so a mis-wire between
+    /// the global and the resolver can't pass on mocks alone.
+    #[test]
+    fn configured_cwd_global_round_trip_and_real_resolution() {
+        // Blank/whitespace is "unset", not a path.
+        set_configured_cwd(Some("   ".into()));
+        assert_eq!(configured_cwd(), None);
+        set_configured_cwd(Some("/Users/u/Code".into()));
+        assert_eq!(configured_cwd(), Some("/Users/u/Code".into()));
+        set_configured_cwd(None);
+        assert_eq!(configured_cwd(), None);
+
+        // A real, existing directory must win outright.
+        let real = std::env::temp_dir()
+            .to_string_lossy()
+            .trim_end_matches('/')
+            .to_string();
+        set_configured_cwd(Some(real.clone()));
+        assert_eq!(default_cwd(), real, "an existing configured dir must win");
+
+        // A configured directory that has since vanished must never reach
+        // `tmux -c` — tmux refuses to spawn and the tab creation would fail.
+        let gone = format!("{real}/cc-cockpit-does-not-exist-9f3a");
+        set_configured_cwd(Some(gone.clone()));
+        assert_ne!(default_cwd(), gone, "missing dir must not be handed to tmux");
+        assert!(
+            std::path::Path::new(&default_cwd()).is_dir(),
+            "the fallback must itself be a real directory"
+        );
+
+        set_configured_cwd(None);
     }
 }

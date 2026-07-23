@@ -532,6 +532,31 @@ export function homeDir(): Promise<string> {
   return invoke<string>("home_dir");
 }
 
+/** Persisted user preferences (`<app_config_dir>/cockpit/settings.json`). */
+export interface CockpitSettings {
+  schemaVersion: number;
+  /** Absolute start directory for new tabs. Absent ⇒ built-in fallback chain
+   *  (`$HOME/Workflows` → `$HOME`). */
+  defaultCwd?: string;
+}
+
+/** Read settings. Never rejects on a missing file — first run returns defaults. */
+export function loadSettings(): Promise<CockpitSettings> {
+  return invoke<CockpitSettings>("load_settings");
+}
+
+/** Persist settings AND apply them to the running process (no restart needed).
+ *  Resolves to the directory that will ACTUALLY be used — the backend re-runs
+ *  its existence check, so a path that silently fell back is visible to the UI. */
+export function saveSettings(settings: CockpitSettings): Promise<string> {
+  return invoke<string>("save_settings", { settings });
+}
+
+/** Where a new tab would actually open right now (post fallback chain). Read-only. */
+export function effectiveDefaultCwd(): Promise<string> {
+  return invoke<string>("effective_default_cwd");
+}
+
 /** One sibling project in the repo-picker dropdown. */
 export interface RepoEntry {
   name: string;

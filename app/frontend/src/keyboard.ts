@@ -7,11 +7,12 @@
 //   ⌘I          toggle the inventory panel
 //   ⌘⇧T         toggle the live team board
 //   ⌘B          toggle the docked file-tree sidebar
+//   ⌘,          toggle the settings dialog (macOS Preferences convention)
 //   ⌘= / ⌘+     zoom the whole UI in   (+0.1)
 //   ⌘-          zoom the whole UI out  (−0.1)
 //   ⌘0          reset zoom to 1.0
 //   Ctrl+wheel  zoom the whole UI (±0.1; trackpad pinch lands here too)
-//   Esc         close the inventory panel / team board (when open)
+//   Esc         close the inventory panel / team board / settings (when open)
 //
 // We bind on the window in capture mode and only act on our combos so terminal
 // keystrokes (which xterm handles) are never swallowed.
@@ -30,6 +31,9 @@ import {
   closeTeamBoard,
   teamBoardOpen,
   toggleSidebar,
+  toggleSettings,
+  closeSettings,
+  settingsOpen,
 } from "./store";
 
 // ── C1: whole-UI zoom (webview setZoom, persisted) ───────────────────────────
@@ -90,10 +94,14 @@ export function installKeyboard(): void {
   function onKey(e: KeyboardEvent) {
     // Esc closes the inventory panel if it's open (intercept BEFORE xterm so a
     // stray Esc dismisses the overlay rather than reaching a terminal process).
-    if (e.key === "Escape" && (inventoryOpen() || teamBoardOpen())) {
+    if (
+      e.key === "Escape" &&
+      (inventoryOpen() || teamBoardOpen() || settingsOpen())
+    ) {
       e.preventDefault();
       if (inventoryOpen()) closeInventory();
       if (teamBoardOpen()) closeTeamBoard();
+      if (settingsOpen()) closeSettings();
       return;
     }
 
@@ -104,6 +112,13 @@ export function installKeyboard(): void {
     if (/^[1-9]$/.test(e.key)) {
       e.preventDefault();
       switchTabByIndex(Number(e.key) - 1);
+      return;
+    }
+
+    // ⌘, — settings (the macOS Preferences convention).
+    if (e.key === ",") {
+      e.preventDefault();
+      toggleSettings();
       return;
     }
 
