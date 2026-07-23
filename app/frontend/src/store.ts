@@ -66,6 +66,10 @@ import {
   type TabLayout,
   type FileEntry,
   type RepoEntry,
+  loadSettings,
+  saveSettings,
+  effectiveDefaultCwd,
+  type CockpitSettings,
 } from "./ipc";
 
 interface CockpitStore extends CockpitState {
@@ -727,6 +731,80 @@ export function closeInventory(): void {
 export function toggleInventory(): void {
   if (inventoryOpen()) closeInventory();
   else openInventory();
+}
+
+// ── Settings (⌘,) ────────────────────────────────────────────────────────────
+// One preference today: the start directory for new tabs. The dialog is loaded
+// lazily on open — settings.json is read from disk, never cached across opens,
+// so an external edit can't leave a stale value in the UI.
+
+interface SettingsStore {
+  /** Configured start dir, or "" when unset (⇒ built-in default). */
+  defaultCwd: string;
+  /** What `default_cwd()` actually resolves to right now. Differs from
+   *  `defaultCwd` when the configured folder was deleted or was never set. */
+  effectiveCwd: string;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+}
+const [settings, setSettings] = createStore<SettingsStore>({
+  defaultCwd: "",
+  effectiveCwd: "",
+  loading: false,
+  saving: false,
+  error: null,
+});
+const [settingsOpen, setSettingsOpen] = createSignal(false);
+export { settings, settingsOpen };
+
+/** Surface a settings-dialog error raised outside the store's own actions. */
+export function setSettingsError(msg: string | null): void {
+  setSettings("error", msg);
+}
+
+/** Read settings + the current effective dir off disk into the dialog. */
+async function reloadSettings(): Promise<void> {
+  setSettings("loading", true);
+  setSettings("error", null);
+  try {
+    const [s, effective] = await Promise.all([loadSettings(), effectiveDefaultCwd()]);
+    setSettings("defaultCwd", s.defaultCwd ?? "");
+    setSettings("effectiveCwd", effective);
+  } catch (e) {
+    setSettings("error", String(e));
+  } finally {
+    setSettings("loading", false);
+  }
+}
+
+/** Persist a new start directory. Empty string clears it (back to default). */
+export async function setDefaultCwd(dir: string): Promise<void> {
+  setSettings("saving", true);
+  setSettings("error", null);
+  try {
+    const next: CockpitSettings = { schemaVersion: 1 };
+    if (dir.trim()) next.defaultCwd = dir.trim();
+    const effective = await saveSettings(next);
+    setSettings("defaultCwd", next.defaultCwd ?? "");
+    setSettings("effectiveCwd", effective);
+  } catch (e) {
+    setSettings("error", String(e));
+  } finally {
+    setSettings("saving", false);
+  }
+}
+
+export function openSettings(): void {
+  setSettingsOpen(true);
+  void reloadSettings();
+}
+export function closeSettings(): void {
+  setSettingsOpen(false);
+}
+export function toggleSettings(): void {
+  if (settingsOpen()) closeSettings();
+  else openSettings();
 }
 
 // ── Live team board (P3 step 3) ──────────────────────────────────────────────

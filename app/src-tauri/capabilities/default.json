@@ -11,6 +11,7 @@
     "core:window:allow-request-user-attention",
     "core:window:allow-set-badge-count",
     "shell:allow-execute",
-    "shell:allow-spawn"
+    "shell:allow-spawn",
+    "dialog:allow-open"
   ]
 }

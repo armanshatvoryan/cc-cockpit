@@ -583,6 +583,41 @@ button {
   margin-top: 16px;
 }
 
+/* Settings (⌘,) — wider than a launch modal because it displays absolute paths. */
+.settings-dialog {
+  width: 520px;
+}
+.settings-dialog .modal-actions {
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+/* The path takes the slack and truncates from the LEFT: the tail of a path is
+   the part that identifies it, the `/Users/<name>/` head is noise. */
+.settings-path {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-1);
+  color: var(--fg);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  direction: rtl;
+  text-align: left;
+}
+
 .field {
   display: block;
   margin-bottom: 10px;
