@@ -7,6 +7,10 @@
 import { render } from "solid-js/web";
 import { App } from "./App";
 import "./styles.css";
+// Side-effect import: stamps `data-theme` on <html> at module load, so a light
+// user's first painted frame is already light. Listed here rather than left to
+// the component graph so the ordering is explicit and survives a refactor.
+import "./theme";
 
 const root = document.getElementById("root");
 if (root) render(() => <App />, root);
