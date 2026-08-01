@@ -32,6 +32,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
+tauri-plugin-clipboard-manager = "2"
 # Native folder picker for the "default start directory" setting — a typed path
 # field is the wrong affordance for choosing a folder on macOS.
 tauri-plugin-dialog = "2"
