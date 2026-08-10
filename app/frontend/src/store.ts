@@ -538,6 +538,10 @@ export async function newTab(name?: string): Promise<void> {
     // Topology event will reconcile; but switch eagerly for snappy UX.
     await refreshState();
     setActiveTabId(res.tabId);
+    scheduleGridPush(); // size the newborn window — it mounts while the OLD tab
+    // is still active, so mount-fit's reportCell bails at the activePanes()
+    // guard and nothing else ever pushes; without this the window keeps its
+    // ~200x50 tmux birth size and the pane renders garbled (bug #9).
     setFocusedPaneId(res.paneId);
     void refreshActiveGitStatus(); // dev#2 — badge the freshly created tab
     persistLayout(); // dev#1
