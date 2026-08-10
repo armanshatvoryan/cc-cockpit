@@ -410,6 +410,16 @@ let gridTimer: number | undefined;
 // window, not global: two tabs with identical geometry still each need their
 // own push (root cause #6/#8, 2026-07-20).
 const lastGridKeyByWindow = new Map<string, string>();
+// Per tmux WINDOW, the pane count seen at the last push. `select-layout tiled`
+// fires only when the count GREW (a new pane appeared) — a resize, tab switch,
+// boot, or pane close is pushed resize-only, so tmux scales the existing
+// arrangement proportionally instead of flattening it.
+const lastPaneCountByWindow = new Map<string, number>();
+// Windows the user arranged by hand (⌘D/⌘⇧D split). Never auto-tiled again —
+// even when external splits later add panes (e.g. an agent team spawning) the
+// user's arrangement wins. Session-scoped: tmux itself preserves the layout
+// across GUI restarts because boot pushes are resize-only (count unchanged).
+const manualLayoutWindows = new Set<string>();
 
 /** An XtermHost measured its char cell in CSS px. */
 export function reportCellPx(w: number, h: number): void {
@@ -447,6 +457,10 @@ export function reportContainer(w: number, h: number): void {
  * birth size. Drop the guard and push the current grid unconditionally. */
 export function gridServerReset(): void {
   lastGridKeyByWindow.clear();
+  // Window ids belong to the dead server — the counts and manual-arrangement
+  // flags keyed by them are meaningless for its replacement.
+  lastPaneCountByWindow.clear();
+  manualLayoutWindows.clear();
   if (gridTimer) clearTimeout(gridTimer);
   gridTimer = window.setTimeout(() => void pushGrid(), 500);
 }
@@ -494,16 +508,25 @@ async function pushGrid(): Promise<void> {
   // Change-guard is per-window: an identical key on a DIFFERENT tab is still a
   // push that must happen, because that tab's tmux window has its own size.
   if (key === lastGridKeyByWindow.get(windowId)) return;
+  // tmux owns the arrangement, the frontend mirrors it (bug #10) — but re-tile
+  // ONLY when the pane count changed in a window the user hasn't arranged by
+  // hand (external split added a pane / a pane closed → re-balance the grid).
+  // Everything else (resize, boot, tab switch) — and EVERYTHING on a manually
+  // arranged window — is pushed resize-only ("none"): tmux scales the existing
+  // layout proportionally, so a ⌘D/⌘⇧D split is never flattened into a grid.
+  const prevCount = lastPaneCountByWindow.get(windowId);
+  const countChanged = prevCount !== undefined && n !== prevCount;
+  const layout =
+    countChanged && !manualLayoutWindows.has(windowId) ? "tiled" : "none";
   try {
-    // Always `tiled`: tmux picks the arrangement, the frontend mirrors it —
-    // there is no CSS layout to match any more.
-    await setGrid(windowId, winCols, winRows, "tiled");
+    await setGrid(windowId, winCols, winRows, layout);
     // Record the key ONLY after the push lands. The control client may still be
     // attaching at first mount, so an early set_grid rejects with "not attached".
     // If we recorded the key before awaiting (the old bug), the change-guard
     // above would then block every retry at this same size — the window stayed
     // stuck at its tmux birth size (200×50) until the user happened to resize.
     lastGridKeyByWindow.set(windowId, key);
+    lastPaneCountByWindow.set(windowId, n);
   } catch {
     // Not attached yet (or transient). No fresh report may follow once the UI
     // settles, so self-heal: retry until the client accepts the size.
@@ -611,6 +634,11 @@ export async function requestCloseTab(
 
 export async function doSplit(paneId: string, dir: "h" | "v"): Promise<void> {
   try {
+    // Mark the window user-arranged BEFORE the split's refresh schedules a
+    // grid push, so the push sees the flag and never re-tiles this window.
+    const winId = store.tabs.find((t) => t.paneIds.includes(paneId))
+      ?.tmuxWindowId;
+    if (winId) manualLayoutWindows.add(winId);
     const res = await splitPane(paneId, dir);
     await refreshState();
     setFocusedPaneId(res.paneId);
