@@ -12,6 +12,7 @@
     "core:window:allow-set-badge-count",
     "shell:allow-execute",
     "shell:allow-spawn",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "clipboard-manager:allow-write-text"
   ]
 }

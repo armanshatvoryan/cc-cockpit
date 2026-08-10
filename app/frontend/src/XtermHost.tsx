@@ -30,6 +30,7 @@ import {
   type PaneDataPayload,
 } from "./ipc";
 import { activePanes, focusedPaneId, reportCellPx } from "./store";
+import { termPalette } from "./theme";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export interface XtermHostProps {
@@ -79,12 +80,10 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       cursorBlink: true,
       scrollback: 5000,
       allowProposedApi: true,
-      theme: {
-        background: "#0d1017",
-        foreground: "#dbe2ef",
-        cursor: "#60a5fa",
-        selectionBackground: "#1e3a5f",
-      },
+      // Themed from theme.ts, not from CSS: xterm needs a JS colour object and
+      // cannot read the stylesheet's custom properties. The effect below keeps
+      // it in step when the user flips the theme.
+      theme: termPalette(),
     });
 
     term.open(hostEl);
@@ -181,6 +180,14 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
         // release it rather than swallowing the user's keystrokes.
         term.blur();
       }
+    });
+
+    // Re-theme in place when the user flips dark/light. Reassigning
+    // `options.theme` repaints the existing buffer, so scrollback survives the
+    // switch — no reset, no tmux round-trip, no lost transcript. Every mounted
+    // pane re-themes, including the ones in background tabs.
+    createEffect(() => {
+      term.options.theme = termPalette();
     });
 
     // NOTE: no post-resize repair step here. Iteration #5 listened for a

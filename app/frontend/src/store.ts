@@ -12,6 +12,7 @@ import { createStore, produce, reconcile as reconcileStore } from "solid-js/stor
 import { createSignal, type Accessor } from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
+import { writeText as tauriWriteText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   cockpitInit,
   createTab,
@@ -1552,10 +1553,17 @@ export async function ftCdActivePane(dir: string): Promise<void> {
 }
 
 async function copyText(t: string): Promise<void> {
+  // WKWebView blocks navigator.clipboard.writeText over the tauri:// scheme, so
+  // Copy Path silently failed. Write through the native clipboard-manager plugin;
+  // fall back to navigator.clipboard only for plain-browser (vite) dev.
   try {
-    await navigator.clipboard.writeText(t);
+    await tauriWriteText(t);
   } catch {
-    setStore("error", "clipboard write failed");
+    try {
+      await navigator.clipboard.writeText(t);
+    } catch {
+      setStore("error", "clipboard write failed");
+    }
   }
 }
 /** Copy Path = absolute. */

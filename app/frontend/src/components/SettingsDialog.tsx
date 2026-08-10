@@ -1,6 +1,12 @@
 // SettingsDialog — cockpit preferences (⌘,).
 //
-// One preference today: the directory new tabs open in. The cockpit's built-in
+// Two preferences: the appearance (dark/light) and the directory new tabs open
+// in. Appearance is applied the instant it is picked — a theme you have to
+// confirm is a theme you cannot judge — and is stored in localStorage by
+// `theme.ts` rather than in the backend settings, so it needs no save cycle and
+// no `busy()` gating.
+//
+// The directory preference: the cockpit's built-in
 // default is `~/Workflows` (the author's layout) falling back to `$HOME`, which
 // is fine but arbitrary on someone else's machine — this makes it a choice.
 //
@@ -10,7 +16,7 @@
 // silently falls back so tmux never gets a `-c` into a missing directory, and
 // silent is exactly what a settings screen should refuse to be.
 
-import { Show, type Component } from "solid-js";
+import { For, Show, type Component } from "solid-js";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   settings,
@@ -18,6 +24,12 @@ import {
   closeSettings,
   setSettingsError,
 } from "../store";
+import { theme, setTheme, type ThemeName } from "../theme";
+
+const THEMES: { value: ThemeName; label: string }[] = [
+  { value: "dark", label: "Dark" },
+  { value: "light", label: "Light" },
+];
 
 export const SettingsDialog: Component = () => {
   async function chooseFolder() {
@@ -57,6 +69,29 @@ export const SettingsDialog: Component = () => {
           >
             ×
           </button>
+        </div>
+
+        <div class="field">
+          <span class="field-label">
+            Appearance{" "}
+            <span class="field-hint">applies immediately, remembered</span>
+          </span>
+
+          <div class="theme-seg" role="group" aria-label="Appearance">
+            <For each={THEMES}>
+              {(t) => (
+                <button
+                  type="button"
+                  class="theme-seg-btn"
+                  classList={{ active: theme() === t.value }}
+                  aria-pressed={theme() === t.value}
+                  onClick={() => setTheme(t.value)}
+                >
+                  {t.label}
+                </button>
+              )}
+            </For>
+          </div>
         </div>
 
         <div class="field">
