@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- CC Cockpit app icon — from Claude Design project cd814c6b ("CC Cockpit Icon").
+       macOS layout: 824x824 squircle content centered on a transparent 1024 canvas
+       (Apple icon-grid margins), corner radius 22.37%. Defaults resolved:
+       gridOpacity 0.07, cursorColor #FFB000, glow 16. -->
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d1428"/>
+      <stop offset="1" stop-color="#060a15"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.055"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="cursorSheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.32"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.18"/>
+    </linearGradient>
+    <filter id="cursorGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feDropShadow dx="0" dy="0" stdDeviation="16" flood-color="#FFB000" flood-opacity="0.5"/>
+    </filter>
+    <clipPath id="squircle">
+      <rect width="1024" height="1024" rx="229" ry="229"/>
+    </clipPath>
+  </defs>
+  <g transform="translate(100,100) scale(0.8046875)">
+    <g clip-path="url(#squircle)">
+      <rect width="1024" height="1024" fill="url(#bgGrad)"/>
+      <g opacity="0.07" stroke="#c9d4e4" stroke-width="2.5">
+        <line x1="512" y1="0" x2="512" y2="1024"/>
+        <line x1="0" y1="512" x2="1024" y2="512"/>
+      </g>
+      <path d="M 326 318 Q 472 410 552 512 Q 472 614 326 706" fill="none" stroke="#d9e1ed" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
+      <g filter="url(#cursorGlow)">
+        <rect x="634" y="396" width="116" height="232" rx="26" fill="#FFB000"/>
+      </g>
+      <rect x="634" y="396" width="116" height="232" rx="26" fill="url(#cursorSheen)"/>
+      <rect width="1024" height="1024" fill="url(#sheen)"/>
+    </g>
+  </g>
+</svg>
