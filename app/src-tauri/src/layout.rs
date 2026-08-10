@@ -224,6 +224,27 @@ mod tests {
     }
 
     #[test]
+    fn manual_split_left_full_height_right_stacked() {
+        // A user's ⌘D then ⌘⇧D: left pane spans the full height while the
+        // right half is stacked — the arrangement resize-only pushes preserve.
+        // The left pane crosses the y=21 boundary (no re-tile normalizes it);
+        // the frontend's edge math must absorb that row's chrome, so the rect
+        // must keep the full 40-cell height.
+        let l = parse_window_layout(
+            "b1c2,100x40,0,0{49x40,0,0,0,50x40,50,0[50x19,50,0,1,50x20,50,20,2]}",
+        )
+        .unwrap();
+        assert_eq!(
+            l.rects,
+            vec![
+                rect("%0", 0, 0, 49, 40),
+                rect("%1", 50, 0, 50, 19),
+                rect("%2", 50, 20, 50, 20),
+            ]
+        );
+    }
+
+    #[test]
     fn malformed_inputs_return_none() {
         for bad in [
             "",

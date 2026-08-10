@@ -567,9 +567,10 @@ impl SessionManager {
         rows: u16,
         layout: &str,
     ) -> Result<(), String> {
+        // "none" = resize-only (no select-layout): preserves a manual split.
         let layout = match layout {
             "tiled" | "even-horizontal" | "even-vertical" | "main-horizontal"
-            | "main-vertical" => layout,
+            | "main-vertical" | "none" => layout,
             _ => "tiled",
         };
         // Clamp to sane bounds; tmux rejects absurd sizes and a 0 would be invalid.

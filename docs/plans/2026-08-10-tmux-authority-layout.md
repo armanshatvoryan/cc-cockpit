@@ -78,3 +78,26 @@ verified by killing %1 and re-splitting: leaves read `0,2,3`).
 - 🔴 LIVE EYEBALL PENDING (user-gated — tauri dev shares the installed
   app's session): 1/2/3/5 panes render unglitched; split/close/switch/zoom;
   new tab (#9) clean.
+
+## Addendum: manual splits preserved (2026-08-10, `fix/preserve-manual-splits`)
+
+v1 of the mirror pushed `select-layout tiled` on EVERY grid push, so a user's
+⌘D/⌘⇧D split survived ~60ms until the split's own refresh re-tiled it. Fix:
+
+- `build_set_grid_cmd` accepts layout `"none"` → resize-window only, no
+  select-layout. tmux scales the existing arrangement proportionally (proven
+  on a probe socket: nested `{left,[right-stacked]}` keeps its structure
+  across a 200×50→150×40 resize-only push).
+- `pushGrid` picks the layout: `tiled` only when the pane COUNT changed in a
+  window the user hasn't split by hand (external pane adds — e.g. agent
+  teams — still get the grid; closes re-balance it). Resizes, boots, tab
+  switches, and everything on a user-arranged window push `"none"`.
+- `doSplit` flags the window user-arranged before the refresh can push.
+  Flags are session-scoped; arrangements survive GUI restarts anyway because
+  boot pushes are resize-only. `gridServerReset` clears both new maps.
+- The mirror itself (parser/edgePx/explicit resize) was already
+  arrangement-agnostic — nested-split fixture added to prove it; the
+  "rowIndex rank of distinct y" description above is v1-era, the shipped
+  edgePx math handles panes spanning row boundaries.
+- Killing the every-push re-tile also kills accepted risk (a), the
+  push↔re-tile oscillation.

@@ -272,11 +272,17 @@ fn pump(mut stdout: impl Read, tx: Sender<Outbound>) {
 /// Command batch for [`ControlClient::set_grid`]. Split out from the method so
 /// the exact command shape is unit-testable without a live tmux server.
 fn build_set_grid_cmd(window_id: &str, cols: u16, rows: u16, layout: &str) -> String {
-    format!(
+    // `layout == "none"` sizes the window WITHOUT re-arranging it: tmux scales
+    // the existing layout proportionally, so a user's manual split survives
+    // resizes, tab switches, and app restarts. A named layout re-tiles as before.
+    let mut cmd = format!(
         "set-option -w -t {window_id} window-size manual\n\
-         resize-window -t {window_id} -x {cols} -y {rows}\n\
-         select-layout -t {window_id} {layout}\n"
-    )
+         resize-window -t {window_id} -x {cols} -y {rows}\n"
+    );
+    if layout != "none" {
+        cmd.push_str(&format!("select-layout -t {window_id} {layout}\n"));
+    }
+    cmd
 }
 
 /// Wrap `s` in single quotes, escaping embedded single quotes for the tmux
@@ -318,6 +324,22 @@ mod tests {
         // on tmux's CURRENT window, which cockpit never updates (no select-window
         // anywhere), so it re-tiled the last-created tab instead of the visible
         // one — root cause #8.
+        for line in cmd.lines() {
+            assert!(line.contains("-t @3"), "untargeted command: {line}");
+        }
+    }
+
+    #[test]
+    fn set_grid_none_resizes_without_relayout() {
+        let cmd = build_set_grid_cmd("@3", 189, 54, "none");
+        assert_eq!(
+            cmd,
+            "set-option -w -t @3 window-size manual\n\
+             resize-window -t @3 -x 189 -y 54\n"
+        );
+        // No select-layout: a resize-only push must never destroy a manual
+        // split arrangement (tmux scales the existing layout proportionally).
+        assert!(!cmd.contains("select-layout"), "relayout leaked: {cmd}");
         for line in cmd.lines() {
             assert!(line.contains("-t @3"), "untargeted command: {line}");
         }
