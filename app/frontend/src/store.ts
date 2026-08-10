@@ -632,14 +632,31 @@ export async function requestCloseTab(
   }
 }
 
-export async function doSplit(paneId: string, dir: "h" | "v"): Promise<void> {
+/** Split direction for "auto": along the focused pane's LONGER rendered axis.
+ * Wider than tall → side-by-side ("h"), taller → stacked ("v"). A full-width
+ * window splits into columns first; each (now taller-than-wide) half then
+ * stacks — repeated ⌘D distributes evenly instead of piling up skinny columns.
+ * Compared in px (tmux cells × measured cell px), since a char cell is ~2×
+ * taller than wide; falls back to "h" while geometry/cell px are unknown. */
+function autoSplitDir(paneId: string): "h" | "v" {
+  const tab = store.tabs.find((t) => t.paneIds.includes(paneId));
+  const rect = tab?.geometry?.rects.find((r) => r.paneId === paneId);
+  const cell = cellPx();
+  if (!rect || !cell) return "h";
+  return rect.w * cell.w >= rect.h * cell.h ? "h" : "v";
+}
+
+export async function doSplit(
+  paneId: string,
+  dir: "h" | "v" | "auto",
+): Promise<void> {
   try {
     // Mark the window user-arranged BEFORE the split's refresh schedules a
     // grid push, so the push sees the flag and never re-tiles this window.
     const winId = store.tabs.find((t) => t.paneIds.includes(paneId))
       ?.tmuxWindowId;
     if (winId) manualLayoutWindows.add(winId);
-    const res = await splitPane(paneId, dir);
+    const res = await splitPane(paneId, dir === "auto" ? autoSplitDir(paneId) : dir);
     await refreshState();
     setFocusedPaneId(res.paneId);
   } catch (e) {

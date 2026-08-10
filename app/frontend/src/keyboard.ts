@@ -2,7 +2,7 @@
 //
 //   ⌘T          new tab
 //   ⌘1..⌘9      switch to the Nth tab
-//   ⌘D          split focused pane horizontally (side-by-side)
+//   ⌘D          split focused pane (auto: along its longer axis)
 //   ⌘⇧D         split focused pane vertically (stacked)
 //   ⌘I          toggle the inventory panel
 //   ⌘⇧T         toggle the live team board
@@ -159,7 +159,7 @@ export function installKeyboard(): void {
     if (k === "d") {
       e.preventDefault();
       const pid = focusedPaneId();
-      if (pid) void doSplit(pid, e.shiftKey ? "v" : "h");
+      if (pid) void doSplit(pid, e.shiftKey ? "v" : "auto");
       return;
     }
 
