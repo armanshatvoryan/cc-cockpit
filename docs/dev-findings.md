@@ -18,7 +18,7 @@ Persistence dir: `~/Library/Application Support/app.crynta.terax/`. Each file is
     {
       "id": "default",                      // string (stable key)
       "name": "Default",                    // string (display)
-      "root": "/Users/armanshatvoran",      // string (absolute path; space's base dir)
+      "root": "/Users/user",      // string (absolute path; space's base dir)
       "env": { "kind": "local" },           // WorkspaceEnv (internally-tagged enum, see below)
       "createdAt": 1781559366658,           // number (epoch ms)
       "updatedAt": 1781559366658            // number (epoch ms)
@@ -42,7 +42,7 @@ Persistence dir: `~/Library/Application Support/app.crynta.terax/`. Each file is
 
 **Pane tree (`tree`) — task #5.** Observed leaf node, **verbatim**:
 ```json
-{ "active": true, "cwd": "/Users/armanshatvoran/Workflows", "kind": "leaf" }
+{ "active": true, "cwd": "/Users/user/Workflows", "kind": "leaf" }
 ```
 The `kind` discriminator implies a recursive node type: a **leaf** carries `{active, cwd}`; a split is **inferred** to be a branch node `{kind:"branch"|"split", …, children:[TreeNode]}`. **The branch node was NOT observed** (the user's spaces hold only single-pane leaves; binary strings for split variant names were dictionary-polluted and unverifiable). Treat branch as a reasonable inference, not fact. Net: the model is a **recursive node tree with a `kind` discriminator** (leaf vs branch), *not* a flat list with parent pointers.
 

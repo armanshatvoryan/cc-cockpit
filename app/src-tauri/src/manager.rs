@@ -906,7 +906,7 @@ mod tests {
         // A C-locale tmux sanitizes the tab delimiters in list-panes output to
         // `_`, fusing the whole line into one string. That garbage must never
         // be served to the frontend as a pane id.
-        assert!(!is_pane_id("%2_2_/_MacBook-Air-Arman.local_0"));
+        assert!(!is_pane_id("%2_2_/_example-host.local_0"));
         // Nor a line whose tabs survived but split failed upstream somehow.
         assert!(!is_pane_id("%2\t2\t/"));
     }
@@ -961,13 +961,13 @@ mod tests {
     #[test]
     fn trim_blank_edges_drops_fresh_pane_padding() {
         // Fresh pane: 1 leading blank, prompt, 45 trailing blanks (the void).
-        let mut s = String::from("\narmanshatvoran@host repo % ");
+        let mut s = String::from("\nuser@host repo % ");
         for _ in 0..45 {
             s.push('\n');
         }
         // Blank LINES are dropped; the prompt line keeps its trailing space
         // (that's where the cursor sits — only edge blank rows are noise).
-        assert_eq!(trim_blank_edges(&s), "armanshatvoran@host repo % ");
+        assert_eq!(trim_blank_edges(&s), "user@host repo % ");
     }
 
     #[test]

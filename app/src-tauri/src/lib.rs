@@ -693,7 +693,7 @@ fn needs_utf8_locale(vals: &[Option<String>]) -> bool {
 /// under a non-UTF-8 locale sanitizes control characters in command output —
 /// every literal TAB we use as a list-panes field delimiter arrives as `_`,
 /// fusing all fields into one garbage "pane id" (close/kill then target
-/// nonsense like `%2_2_/_MacBook-Air-Arman.local_0`). Install a UTF-8 LC_CTYPE
+/// nonsense like `%2_2_/_example-host.local_0`). Install a UTF-8 LC_CTYPE
 /// so tmux passes tabs through verbatim; never override a user-set UTF-8 locale.
 fn repair_locale_for_gui() {
     let vals: Vec<Option<String>> = ["LC_ALL", "LC_CTYPE", "LANG"]

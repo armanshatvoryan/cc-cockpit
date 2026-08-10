@@ -3,7 +3,7 @@
 [38;5;174m  ▘▘ ▝▝  [39m  [38;5;246m~/Workflows/personal-agent[39m
 
 [38;5;246m  ⎿  SessionStart:startup says: <persisted-output>[39m
-     [38;5;246mOutput too large (12.2KB). Full output saved to: /Users/armanshatvoran/.claude/projects/-Users-armanshatvoran-Workflows-personal-agent/3694637f-ca7c-4a47
+     [38;5;246mOutput too large (12.2KB). Full output saved to: /Users/user/.claude/projects/-Users-user-Workflows-personal-agent/3694637f-ca7c-4a47
 [39m     [38;5;246m-a4c8-b054303d003c/tool-results/hook-f86e2b74-51f5-4ac2-a37b-176f21c731d5-6-systemMessage.txt[39m
 
      [38;5;246mPreview (first 2KB):[39m

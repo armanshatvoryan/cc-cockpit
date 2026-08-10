@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn shell_prompt_is_idle_not_unknown() {
         // The default + `Launch shell` panes are plain zsh — no Claude markers.
-        let snap = "Last login: …\narmanshatvoran@MacBook-Air-Arman src-tauri % \n";
+        let snap = "Last login: …\nuser@example-host src-tauri % \n";
         assert_eq!(classify(false, snap, None), Status::Idle);
     }
 
