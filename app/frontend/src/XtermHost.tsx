@@ -6,28 +6,55 @@
 // at mount (a pane id is stable for the life of the cell) — the parent keys the
 // component by paneId so a different pane means a fresh XtermHost.
 //
+// SIZING (tmux-authority mirror, bug #10): the terminal's cols/rows come from
+// its tmux pane's rect (`props.rect`, reactive) via explicit `term.resize` —
+// NOT from FitAddon guessing off the host box. tmux decides the layout; every
+// xterm matches its pane by construction, hidden tabs included (no layout box
+// needed to resize). This host's only measurement duty is the char cell in CSS
+// px (`reportCellPx`), which the grid coordinator needs to size the WINDOW.
+//
 // Data path:
 //   pane:data {paneId,bytesB64}  ->  term.write(decode)        (output)
 //   term.onData(data)            ->  paneSendKeys(paneId,data) (input)
-//   ResizeObserver -> fit()      ->  paneResize(...)           (resize)
+//   props.rect change            ->  term.resize(w, h)         (resize)
 //   onCleanup                    ->  term.dispose() + unlisten (HMR/kill safe)
 
 import { createEffect, onCleanup, onMount, type Component } from "solid-js";
 import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
   onPaneData,
   paneSendKeys,
   warmStart,
+  type LayoutRect,
   type PaneDataPayload,
 } from "./ipc";
-import { activePanes, focusedPaneId, reportCell } from "./store";
+import { activePanes, focusedPaneId, reportCellPx } from "./store";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export interface XtermHostProps {
   /** tmux pane id this host renders, e.g. "%0". Stable for the cell's life. */
   paneId: string;
+  /** The pane's tmux rect (cols/rows) — the terminal mirrors it exactly. */
+  rect?: LayoutRect;
+}
+
+/** Measure one char cell in CSS px from xterm's render service. Private API
+ * (no public equivalent — FitAddon reads the same fields); returns null until
+ * the renderer has measured, so callers just retry. */
+function measureCellPx(term: Terminal): { w: number; h: number } | null {
+  const dims = (
+    term as unknown as {
+      _core?: {
+        _renderService?: {
+          dimensions?: { css?: { cell?: { width: number; height: number } } };
+        };
+      };
+    }
+  )._core?._renderService?.dimensions?.css?.cell;
+  return dims && dims.width > 0 && dims.height > 0
+    ? { w: dims.width, h: dims.height }
+    : null;
 }
 
 /** Decode a base64 string to a Uint8Array (binary-safe; atob mangles bytes). */
@@ -60,31 +87,39 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       },
     });
 
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-
     term.open(hostEl);
 
     // NOTE: WebglAddon intentionally NOT used — it renders an all-black canvas in
     // the macOS WKWebView. The default DOM renderer is plenty for v1 (output is
     // already coalesced to ~1 write/pane/16ms in the backend forwarder).
 
-    // Initial fit + report our cell size to the grid coordinator (the single
-    // window-size authority). Per-pane resize is gone — it collapsed multi-pane
-    // tabs to 1 column.
-    //
-    // A pane belonging to a NON-active tab now mounts too (tabs are kept mounted
-    // so switching never destroys a terminal). Those hosts are hidden with
-    // `visibility`, so they DO have a layout box and fit normally — the guard is
-    // for the genuinely unmeasurable cases (mount before layout, collapsed
-    // sidebar), where fit() throws on a 0x0 box. The ResizeObserver below picks
-    // those up as soon as the element has a size.
-    let everReported = false;
-    if (hostEl.clientWidth > 0 && hostEl.clientHeight > 0) {
-      fit.fit();
-      reportCell(paneId, term.cols, term.rows);
-      everReported = true;
+    // Report the char cell px to the grid coordinator (identical for every
+    // pane — same font/size — so first-reporter wins and the rest are no-ops).
+    // The renderer may not have measured yet at open; retry briefly.
+    const tryReportCell = () => {
+      const c = measureCellPx(term);
+      if (c) reportCellPx(c.w, c.h);
+      return !!c;
+    };
+    let measureTimer: number | undefined;
+    if (!tryReportCell()) {
+      measureTimer = window.setInterval(() => {
+        if (tryReportCell()) {
+          clearInterval(measureTimer);
+          measureTimer = undefined;
+        }
+      }, 100);
     }
+
+    // Mirror the tmux pane's size exactly. Runs on mount (rect is usually
+    // already known from the boot list_state) and on every layout change.
+    // Hidden tabs resize too — no layout box needed, unlike the old fit().
+    createEffect(() => {
+      const r = props.rect;
+      if (r && r.w > 0 && r.h > 0 && (term.cols !== r.w || term.rows !== r.h)) {
+        term.resize(r.w, r.h);
+      }
+    });
 
     // Output: write decoded bytes verbatim (xterm is a full VT emulator).
     let unlistenData: UnlistenFn | undefined;
@@ -117,25 +152,14 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       paneSendKeys(paneId, data); // fire-and-forget
     });
 
-    // Resize: ResizeObserver -> fit -> push to tmux when cols/rows change.
+    // Host resizes no longer drive the terminal size (tmux does). The observer
+    // survives only to re-measure the char cell after zoom re-metrics change
+    // the font geometry — reportCellPx no-ops when nothing moved.
     let resizeTimer: number | undefined;
-    let lastCols = term.cols;
-    let lastRows = term.rows;
     const ro = new ResizeObserver(() => {
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = window.setTimeout(() => {
-        // Skip when the host is hidden (display:none -> 0x0 -> fit throws).
-        if (hostEl.clientWidth === 0 || hostEl.clientHeight === 0) return;
-        fit.fit();
-        // `!everReported` covers a pane that mounted hidden: its very first real
-        // fit must be reported even if it happens to land on xterm's 80x24
-        // default, or the tab would never size its tmux window.
-        if (!everReported || term.cols !== lastCols || term.rows !== lastRows) {
-          lastCols = term.cols;
-          lastRows = term.rows;
-          everReported = true;
-          reportCell(paneId, term.cols, term.rows);
-        }
+        tryReportCell();
       }, 50);
     });
     ro.observe(hostEl);
@@ -169,6 +193,7 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     onCleanup(() => {
       disposed = true;
       if (resizeTimer) clearTimeout(resizeTimer);
+      if (measureTimer) clearInterval(measureTimer);
       ro.disconnect();
       dataSub.dispose();
       unlistenData?.();

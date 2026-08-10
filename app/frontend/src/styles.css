@@ -258,6 +258,27 @@ button {
   background: var(--bg-0);
 }
 
+/* Mirror mode (bug #10): tmux decided the layout; every .pane-slot carries an
+   absolute px box computed from its tmux pane rect. The grid display dies —
+   slots position themselves. */
+.pane-grid-mirror {
+  display: block;
+}
+.pane-grid-mirror > .pane-slot {
+  position: absolute;
+}
+
+/* Slot wrapper — a grid cell in fallback mode, an absolute box in mirror
+   mode; either way the Pane fills it. */
+.pane-slot {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+.pane-slot > .pane {
+  flex: 1 1 auto;
+}
+
 /* Hidden but still laid out, so its xterms keep fitting to the real viewport
    and stay in sync with their tmux panes while in the background. */
 .pane-grid-hidden {

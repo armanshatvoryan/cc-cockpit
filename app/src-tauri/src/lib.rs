@@ -15,6 +15,7 @@
 pub mod filetree;
 pub mod gitstatus;
 pub mod inventory;
+pub mod layout;
 pub mod manager;
 pub mod persist;
 pub mod settings;

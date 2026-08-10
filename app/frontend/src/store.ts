@@ -175,6 +175,11 @@ function reconcile(next: CockpitState): void {
 export async function refreshState(): Promise<void> {
   try {
     reconcile(await listState());
+    // The fresh geometry may change the pane-column/row chrome budget (e.g.
+    // a split turned 1 pane-row into 2) — re-key the window push. The
+    // change-guard makes this a no-op when nothing relevant moved, so no
+    // push→layout-change→push loop: it converges in one extra round at most.
+    scheduleGridPush();
   } catch (e) {
     setStore("error", String(e));
   }
@@ -321,11 +326,10 @@ export async function bootCockpit(): Promise<void> {
   });
 
   // cockpit:reconnected — backend re-healed a vanished server. Reload state, then
-  // re-push the grid: the replacement server was born at default size and a fresh
-  // server reuses pane ids (%0…), so <For> may NOT remount the xterms — no
-  // reportCell fires, and even when one does, the unchanged cell size hits the
-  // pushGrid change-guard. Without the reset the new server never hears
-  // `refresh-client -C` and panes sit at tmux birth size (200×50) → garble.
+  // re-push the grid: the replacement server was born at default size, but the
+  // recorded grid key describes a push only the DEAD server applied, so an
+  // ordinary push would hit the change-guard. gridServerReset drops the guard
+  // and pushes unconditionally — else panes sit at tmux birth size (200×50).
   const unReconnect = await onCockpitReconnected(() => {
     setStore("error", null);
     void refreshState().then(gridServerReset);
@@ -364,42 +368,76 @@ export function shutdownCockpit(): void {
 
 // ── Actions ────────────────────────────────────────────────────────────────────
 
-// ── Grid sizing coordinator ─────────────────────────────────────────────────
+// ── Grid sizing coordinator (tmux-authority mirror, bug #10) ────────────────
 //
-// THE single authority for tmux window size. Each xterm reports its fitted cell
-// size (cols×rows) here; we compute the window bounding box = grid columns/rows ×
-// cell + inter-pane borders, and push ONE `set_grid` for the ACTIVE TAB'S OWN
-// tmux window (`resize-window -t` + `select-layout -t`, both targeted).
+// tmux owns pane ARRANGEMENT; the frontend owns only the WINDOW size. One
+// container-level push tells tmux how many total cols/rows fit the pane
+// stack; tmux tiles the panes and reports the result in `window_layout`,
+// which the backend parses (`TabInfo.geometry`) and the frontend mirrors 1:1
+// — PaneGrid positions panes from the rects, XtermHost `term.resize`s each
+// terminal to its tmux pane's exact cols/rows.
 //
-// Sizing used to go through `refresh-client -C`, which sets the CLIENT size and
-// is session-global: every tab shared one geometry, so sizing the tab you were
-// looking at silently resized the ones you weren't. Windows are now `window-size
-// manual` and sized individually. This also replaces the older per-pane resize
-// where every xterm set the whole client size to its own width — the last writer
-// shrank the window to one
-// pane and the rest collapsed to 1 column ("no space for new pane" on split).
+// This replaces the per-pane FitAddon math, which diverged from tmux `tiled`
+// on any pane count that doesn't fill the rectangle: 3 panes @189×109 → tmux
+// gives the bottom pane 189 cols vs the 94-col CSS cell — that pane was
+// permanently garbled (root cause #10, 2026-08-10).
+//
+// Sizing still targets the ACTIVE TAB'S OWN tmux window (`resize-window -t` +
+// `select-layout -t`) — windows are `window-size manual` and sized
+// individually, never via the session-global `refresh-client -C`.
 
-// Fitted cell size per pane. Was a single global pair (last writer wins), which
-// breaks now that tabs stay mounted: switching from a 2-pane tab (94 cols each)
-// to a 1-pane tab (192 cols) would size the arriving window from the tab you
-// LEFT, because the arriving tab's xterms were already fitted and so reported
-// nothing on the way in. Every pane records its own size — including hidden
-// ones, which fit correctly since inactive grids keep their layout box.
-const cellByPane = new Map<string, { cols: number; rows: number }>();
+/** .pane-toolbar height (styles.css) — vertical chrome each pane-row costs. */
+export const PANE_TOOLBAR_PX = 28;
+/** Horizontal per-pane chrome: 1px border ×2 + 4px .xterm-host left padding. */
+export const PANE_CHROME_W = 6;
+/** Vertical per-pane chrome: toolbar + 1px border ×2 + 4px top padding. */
+export const PANE_CHROME_H = PANE_TOOLBAR_PX + 6;
+/** .pane-grid padding (each side). */
+export const GRID_PAD = 3;
+
+// One xterm char cell in CSS px — measured by the first mounted XtermHost
+// (identical for all panes: same font, same size). A signal so PaneGrid's
+// mirror positioning recomputes when zoom re-metrics change it.
+const [cellPx, setCellPx] = createSignal<{ w: number; h: number } | null>(null);
+export { cellPx };
+
+// The shared pane-stack box in CSS px (all tabs stack on the same element).
+let containerPx: { w: number; h: number } | null = null;
+
 let gridTimer: number | undefined;
-// Per tmux WINDOW, the last grid key successfully pushed for it. Was a single
-// global string, which silently swallowed tab switches: two tabs with the same
-// pane count and cell size produce an IDENTICAL key, so the change-guard
-// early-returned and the tab being shown was never sized (root cause #6/#8,
-// 2026-07-20). Keyed by window, an arriving tab is always compared against its
-// OWN last push.
+// Per tmux WINDOW, the last grid key successfully pushed for it. Keyed by
+// window, not global: two tabs with identical geometry still each need their
+// own push (root cause #6/#8, 2026-07-20).
 const lastGridKeyByWindow = new Map<string, string>();
 
-/** Column count for n panes — MUST mirror PaneGrid.columnsFor. */
-function gridColumns(n: number): number {
-  if (n <= 1) return 1;
-  if (n <= 4) return 2;
-  return 3;
+/** An XtermHost measured its char cell in CSS px. */
+export function reportCellPx(w: number, h: number): void {
+  if (!(w > 0) || !(h > 0)) return;
+  const cur = cellPx();
+  if (cur && Math.abs(cur.w - w) < 0.01 && Math.abs(cur.h - h) < 0.01) return;
+  setCellPx({ w, h });
+  scheduleGridPush();
+}
+
+/** PaneGrid's stack element resized (window resize, sidebar toggle, zoom).
+ *
+ * SETTLE GATE: during boot/reconnect the webview settles in steps (window
+ * restore, sidebar mount, async setZoom re-metrics). Pushing each step gave
+ * the pane's TUI an overlapping SIGWINCH storm whose partial differential
+ * redraws pollute tmux's own grid. Until the first push lands for the active
+ * window require a longer stretch of stability (500ms) so boot collapses into
+ * ONE clean transition; settled UI coalesces at 350ms. */
+export function reportContainer(w: number, h: number): void {
+  if (!(w > 0) || !(h > 0)) return;
+  containerPx = { w, h };
+  if (gridTimer) clearTimeout(gridTimer);
+  const firstPushForActiveWindow = !lastGridKeyByWindow.has(
+    activeTab()?.tmuxWindowId ?? "",
+  );
+  gridTimer = window.setTimeout(
+    () => void pushGrid(),
+    firstPushForActiveWindow ? 500 : 350,
+  );
 }
 
 /** The tmux server was replaced (mid-op re-heal or healing create_tab). The
@@ -409,67 +447,56 @@ function gridColumns(n: number): number {
 export function gridServerReset(): void {
   lastGridKeyByWindow.clear();
   if (gridTimer) clearTimeout(gridTimer);
-  // 500ms matches the first-push settle gate: post-reconnect remounts refit in
-  // steps too, and any reportCell in the window extends the timer via the gate.
   gridTimer = window.setTimeout(() => void pushGrid(), 500);
 }
 
-/** An xterm reports its fitted cell size; recompute + push the window grid.
- *
- * FIRST-PUSH SETTLE GATE: during boot/reconnect the webview settles in steps
- * (window restore, sidebar mount, async setZoom re-metrics) and the fitted
- * size walks through garbage intermediates (observed 154→65→118→163→181).
- * Pushing each one gave the pane's TUI an overlapping SIGWINCH storm whose
- * partial differential redraws pollute tmux's own grid. Until the first push
- * lands for the active tab's window require a longer stretch of stability, so
- * boot collapses into ONE clean transition. Settled UI: 350ms — still one push per
- * gesture, but discrete steps landing a couple hundred ms apart (fullscreen
- * toggle, snap layouts) coalesce instead of double-pushing into a storm. */
-export function reportCell(paneId: string, cols: number, rows: number): void {
-  // Record every pane's size, hidden tabs included — that is what makes the
-  // arriving tab's geometry available the instant it is switched to.
-  if (cols > 0 && rows > 0) cellByPane.set(paneId, { cols, rows });
-  // ...but only the visible tab may drive a push. A background tab re-fitting
-  // (e.g. on a window resize) must not resize the window you are looking at.
-  if (!activePanes().some((p) => p.paneId === paneId)) return;
-  if (gridTimer) clearTimeout(gridTimer);
-  const firstPushForActiveWindow = !lastGridKeyByWindow.has(
-    activeTab()?.tmuxWindowId ?? "",
-  );
-  const delay = firstPushForActiveWindow ? 500 : 350;
-  gridTimer = window.setTimeout(() => void pushGrid(), delay);
+/** Pane-columns/rows the tab's CURRENT layout occupies (distinct x/y starts),
+ * for the chrome budget. Before geometry exists, estimate from the old grid
+ * formula so the first push is roughly right; the next layout-change refines
+ * it (pushGrid re-keys and converges in one extra round-trip at most). */
+function paneGridShape(tab: TabInfo | undefined): { cols: number; rows: number } {
+  const g = tab?.geometry;
+  if (g && g.rects.length > 0) {
+    return {
+      cols: new Set(g.rects.map((r) => r.x)).size,
+      rows: new Set(g.rects.map((r) => r.y)).size,
+    };
+  }
+  const n = tab ? panesForTab(tab.tabId).length : 1;
+  const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
+  return { cols, rows: Math.ceil(Math.max(n, 1) / cols) };
 }
 
 async function pushGrid(): Promise<void> {
-  // Active tab ONLY. The viewport (refresh-client -C) is shared across tmux
-  // windows, and PaneGrid renders just the active tab's panes — so the grid
-  // must mirror activePanes(), not the global pane count. Using store.panes
-  // here counted panes in OTHER tabs too: 2 tabs × 1 pane → n=2 → a 2-col
-  // viewport ~2× the real width, so a single-pane tab's CC laid out for double
-  // width and wrapped/scattered in the half-width xterm.
-  const windowId = activeTab()?.tmuxWindowId;
-  if (!windowId) return;
-  const panes = activePanes();
-  const n = panes.length;
+  // Active tab ONLY: PaneGrid shows one tab; background windows keep their
+  // own size and get sized on switch.
+  const tab = activeTab();
+  if (!tab) return;
+  const windowId = tab.tmuxWindowId;
+  const n = panesForTab(tab.tabId).length;
   if (n === 0) return;
-  const cols = gridColumns(n);
-  const rows = Math.ceil(n / cols);
-  // Tiles are even, so any pane of THIS tab gives the cell size. Falling back to
-  // 80x24 only matters before the first fit.
-  const cell = cellByPane.get(panes[0].paneId) ?? { cols: 80, rows: 24 };
-  // Bounding box: tiles plus one border column/row between adjacent panes.
-  const winCols = cols * cell.cols + (cols - 1);
-  const winRows = rows * cell.rows + (rows - 1);
-  // Layout must MATCH the CSS grid. A single row of panes (n <= cols) is a
-  // horizontal split — `tiled` would stack them vertically (mismatch → wrapping),
-  // so use `even-horizontal`. Multi-row falls back to `tiled` (≈ the 2-col CSS).
-  const layout = rows <= 1 ? "even-horizontal" : "tiled";
-  const key = `${winCols}x${winRows}/${n}/${layout}`;
+  const cell = cellPx();
+  const box = containerPx;
+  // Not measurable yet — the reports that set these re-drive the push.
+  if (!cell || !box) return;
+  // Window size = what fits the box after per-pane-column/row chrome. tmux
+  // cells include the 1-cell inter-pane borders, so no extra gap math.
+  const shape = paneGridShape(tab);
+  const winCols = Math.floor(
+    (box.w - 2 * GRID_PAD - shape.cols * PANE_CHROME_W) / cell.w,
+  );
+  const winRows = Math.floor(
+    (box.h - 2 * GRID_PAD - shape.rows * PANE_CHROME_H) / cell.h,
+  );
+  if (winCols < 20 || winRows < 5) return; // degenerate box; wait for layout
+  const key = `${winCols}x${winRows}/${n}`;
   // Change-guard is per-window: an identical key on a DIFFERENT tab is still a
   // push that must happen, because that tab's tmux window has its own size.
   if (key === lastGridKeyByWindow.get(windowId)) return;
   try {
-    await setGrid(windowId, winCols, winRows, layout);
+    // Always `tiled`: tmux picks the arrangement, the frontend mirrors it —
+    // there is no CSS layout to match any more.
+    await setGrid(windowId, winCols, winRows, "tiled");
     // Record the key ONLY after the push lands. The control client may still be
     // attaching at first mount, so an early set_grid rejects with "not attached".
     // If we recorded the key before awaiting (the old bug), the change-guard
@@ -477,8 +504,8 @@ async function pushGrid(): Promise<void> {
     // stuck at its tmux birth size (200×50) until the user happened to resize.
     lastGridKeyByWindow.set(windowId, key);
   } catch {
-    // Not attached yet (or transient). No fresh reportCell may follow once the
-    // xterm settles, so self-heal: retry until the client accepts the size.
+    // Not attached yet (or transient). No fresh report may follow once the UI
+    // settles, so self-heal: retry until the client accepts the size.
     if (gridTimer) clearTimeout(gridTimer);
     gridTimer = window.setTimeout(() => void pushGrid(), 400);
   }
@@ -538,10 +565,9 @@ export async function newTab(name?: string): Promise<void> {
     // Topology event will reconcile; but switch eagerly for snappy UX.
     await refreshState();
     setActiveTabId(res.tabId);
-    scheduleGridPush(); // size the newborn window — it mounts while the OLD tab
-    // is still active, so mount-fit's reportCell bails at the activePanes()
-    // guard and nothing else ever pushes; without this the window keeps its
-    // ~200x50 tmux birth size and the pane renders garbled (bug #9).
+    scheduleGridPush(); // size the newborn window — refreshState() above
+    // scheduled a push while the OLD tab was still active, so without this the
+    // new window keeps its ~200x50 tmux birth size and garbles (bug #9).
     setFocusedPaneId(res.paneId);
     void refreshActiveGitStatus(); // dev#2 — badge the freshly created tab
     persistLayout(); // dev#1
