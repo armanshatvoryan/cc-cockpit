@@ -76,6 +76,10 @@ pub struct TabInfo {
     pub name: String,
     /// tmux layout string for the window (for the frontend's pane geometry).
     pub layout: String,
+    /// Parsed pane geometry (tmux is the layout authority — bug #10). None
+    /// when the layout string fails to parse; the frontend then falls back
+    /// to its own grid.
+    pub geometry: Option<crate::layout::WindowLayout>,
     /// Pane ids in this tab (tmux order).
     pub pane_ids: Vec<String>,
 }
@@ -620,12 +624,14 @@ impl SessionManager {
             let name = it.next().unwrap_or("").to_string();
             let layout = it.next().unwrap_or("").to_string();
             let pane_ids = pane_map.get(&win).cloned().unwrap_or_default();
+            let geometry = crate::layout::parse_window_layout(&layout);
             tabs.push(TabInfo {
                 tab_id: tab_id_for_index(index),
                 tmux_window_id: win,
                 index,
                 name,
                 layout,
+                geometry,
                 pane_ids,
             });
         }

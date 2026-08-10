@@ -32,12 +32,30 @@ export interface PaneInfo {
   ambiguous: boolean;
 }
 
+/** One pane's rectangle in tmux cell space (parsed from `window_layout`). */
+export interface LayoutRect {
+  paneId: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Parsed window layout: total size in cells + every pane's rect. */
+export interface WindowLayout {
+  width: number;
+  height: number;
+  rects: LayoutRect[];
+}
+
 export interface TabInfo {
   tabId: string;
   tmuxWindowId: string;
   index: number;
   name: string;
   layout: string;
+  /** null when the layout string failed to parse — fall back to the CSS grid. */
+  geometry: WindowLayout | null;
   paneIds: string[];
 }
 

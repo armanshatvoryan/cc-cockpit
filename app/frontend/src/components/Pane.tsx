@@ -5,14 +5,19 @@
 // for the pane's whole life and is never re-created on focus changes.
 
 import { createSignal, Show, type Component } from "solid-js";
-import type { PaneInfo } from "../ipc";
+import type { LayoutRect, PaneInfo } from "../ipc";
 import { interruptPane } from "../ipc";
 import { focusPane, doClosePane, activePanes, sendPaneToNewTab } from "../store";
 import { StatusBadge } from "./StatusBadge";
 import { LaunchDialog } from "./LaunchDialog";
 import { XtermHost } from "../XtermHost";
 
-export const Pane: Component<{ pane: PaneInfo; focused: boolean }> = (props) => {
+export const Pane: Component<{
+  pane: PaneInfo;
+  focused: boolean;
+  /** This pane's tmux rect (layout mirror) — XtermHost resizes to match. */
+  rect?: LayoutRect;
+}> = (props) => {
   const [showLaunch, setShowLaunch] = createSignal(false);
 
   const isWorking = () => props.pane.status === "WORKING";
@@ -95,7 +100,7 @@ export const Pane: Component<{ pane: PaneInfo; focused: boolean }> = (props) => 
             </div>
           }
         >
-          <XtermHost paneId={props.pane.paneId} />
+          <XtermHost paneId={props.pane.paneId} rect={props.rect} />
         </Show>
       </div>
 
