@@ -1,7 +1,7 @@
 # Phase 2 — Frontend Findings: Terax → CC Cockpit (UI/UX/Layout/Interaction/Theming)
 
 **Provenance:** FRONTEND · **Axis:** UI / UX / layout / interaction / theming only
-**Baseline:** `/Users/armanshatvoran/Workflows/cc-cockpit/app/frontend/src` (SolidJS)
+**Baseline:** `/Users/user/Workflows/cc-cockpit/app/frontend/src` (SolidJS)
 **Subject:** Terax `1.x` — closed-source Tauri AI terminal (`app.crynta.terax`), inspected via binary `strings`, config JSON, and one live screenshot.
 
 ---
@@ -26,7 +26,7 @@
 `terax-spaces.json`:
 ```json
 { "activeId": "default",
-  "spaces": [ { "id":"default","name":"Default","root":"/Users/armanshatvoran",
+  "spaces": [ { "id":"default","name":"Default","root":"/Users/user",
                "env": { "kind": "local" }, "createdAt":…,"updatedAt":… } ],
   "state:default": { "activeTabIndex": 4, "tabs": [ … ] } }
 ```

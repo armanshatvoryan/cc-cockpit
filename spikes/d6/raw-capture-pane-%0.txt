@@ -3,7 +3,7 @@
 
  [2m▎[0m [38;5;246mUsing Opus 4.8 (1M context) (from .claude/settings.json) · /model[39m
 [38;5;246m  ⎿  SessionStart:startup says: <persisted-output>[39m
-     [38;5;246mOutput too large (12KB). Full output saved to: /Users/armanshatvoran/.claude/projects/-Users-armanshatvoran-Workflows/35296d08-d6c5-49f0-b463-46501cc2f24
+     [38;5;246mOutput too large (12KB). Full output saved to: /Users/user/.claude/projects/-Users-user-Workflows/35296d08-d6c5-49f0-b463-46501cc2f24
 [39m     [38;5;246mb/tool-results/hook-e69e81ba-3d00-4a1c-bdab-108cc2951e76-5-systemMessage.txt[39m
 
      [38;5;246mPreview (first 2KB):[39m

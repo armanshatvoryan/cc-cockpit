@@ -2,11 +2,11 @@
 %end 1781792419 279 0
 %session-changed $0 d3
 %output %0 \033]133;D;0\033\134
-%output %0 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
+%output %0 \033]7;file://example-host.local/Users/user/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
 %output %0 \033[1m\033[7m%\033[27m\033[1m\033[0m                                                                               \015 \015
 %output %0 \033]133;D;0\033\134
-%output %0 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
-%output %0 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % \033[K\033[?2004h
+%output %0 \033]7;file://example-host.local/Users/user/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
+%output %0 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134user@example-host d3 % \033[K\033[?2004h
 %begin 1781792420 284 1
 %end 1781792420 284 1
 %output %0 p\010printf 'H
@@ -14,8 +14,8 @@
 %output %0 \134
 %output %0 r\134n'\033[?2004l\015\015\012
 %output %0 \033]133;C;printf 'Hello\134tD3\134r\134n'\033\134Hello\011D3\015\015\012\033[1m\033[7m%\033[27m\033[1m\033[0m                                                                               \015 \015\033]133;D;0\033\134
-%output %0 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
-%output %0 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % \033[K\033[?2004h
+%output %0 \033]7;file://example-host.local/Users/user/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
+%output %0 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134user@example-host d3 % \033[K\033[?2004h
 %begin 1781792420 285 1
 %end 1781792420 285 1
 %output %0 p\010printf '\134033[31mR
@@ -24,19 +24,19 @@
 %output %0 ox\134r\134n'\033[?2004l\015\015\012
 %output %0 \033]133;C;printf '\134033[31mRED\134033[0m box\134r\134n'\033\134\033[31mRED\033[0m box\015\015\012
 %output %0 \033[1m\033[7m%\033[27m\033[1m\033[0m                                                                               \015 \015\033]133;D;0\033\134
-%output %0 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
-%output %0 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % \033[K\033[?2004h
+%output %0 \033]7;file://example-host.local/Users/user/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
+%output %0 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134user@example-host d3 % \033[K\033[?2004h
 %begin 1781792421 286 1
 %end 1781792421 286 1
 %window-pane-changed @0 %1
 %layout-change @0 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} *
-%output %0 \015\015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % 
+%output %0 \015\015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134user@example-host d3 % 
 %output %1 \033]133;D;0\033\134
-%output %1 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
+%output %1 \033]7;file://example-host.local/Users/user/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
 %output %1 \033[1m\033[7m%\033[27m\033[1m\033[0m                                      \015 \015
 %output %1 \033]133;D;0\033\134
-%output %1 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
-%output %1 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % \033[K\033[?2004h
+%output %1 \033]7;file://example-host.local/Users/user/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
+%output %1 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134user@example-host d3 % \033[K\033[?2004h
 %begin 1781792422 289 1
 %end 1781792422 289 1
 %output %1 e \015\033[Kc\015ch
@@ -46,26 +46,26 @@
 %output %1 second-pane\015\012
 %output %1 \033[1m\033[7m%\033[27m\033[1m\033[0m                                      \015 \015
 %output %1 \033]133;D;0\033\134
-%output %1 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
-%output %1 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % \033[K\033[?2004h
+%output %1 \033]7;file://example-host.local/Users/user/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
+%output %1 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134user@example-host d3 % \033[K\033[?2004h
 %begin 1781792423 290 1
 %end 1781792423 290 1
 %layout-change @0 6b8b,100x30,0,0{50x30,0,0,0,49x30,51,0,1} 6b8b,100x30,0,0{50x30,0,0,0,49x30,51,0,1} *
-%output %1 \015\015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % 
-%output %0 \015\015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % 
+%output %1 \015\015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134user@example-host d3 % 
+%output %0 \015\015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134user@example-host d3 % 
 %begin 1781792423 293 1
 %end 1781792423 293 1
 %layout-change @0 a87d,100x30,0,0,0 a87d,100x30,0,0,0 *
 %window-pane-changed @0 %0
-%output %0 \015\015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % 
+%output %0 \015\015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134user@example-host d3 % 
 %begin 1781792424 296 1
 %end 1781792424 296 1
 %output %0 e\010echo af
 %output %0 ter-kill
 %output %0 \033[?2004l\015\015\012
 %output %0 \033]133;C;echo after-kill\033\134after-kill\015\012\033[1m\033[7m%\033[27m\033[1m\033[0m                                                                                                   \015 \015\033]133;D;0\033\134
-%output %0 \033]7;file://MacBook-Air-Arman.local/Users/armanshatvoran/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
-%output %0 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134armanshatvoran@MacBook-Air-Arman d3 % \033[K\033[?2004h
+%output %0 \033]7;file://example-host.local/Users/user/Workflows/cc-cockpit/.claude/worktrees/agent-a42e1ffb14193e978/spikes/d3\033\134\033]133;A\033\134
+%output %0 \015\033[0m\033[27m\033[24m\033[J\033]133;B\033\134user@example-host d3 % \033[K\033[?2004h
 %begin 1781792426 297 1
 %end 1781792426 297 1
 %exit

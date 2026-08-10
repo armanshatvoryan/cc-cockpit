@@ -16,7 +16,7 @@ Dir: `~/Library/Application Support/app.crynta.terax/`. Each file = a `tauri-plu
 
 **Pane tree (task #5)** — observed leaf node **verbatim**:
 ```json
-{ "active": true, "cwd": "/Users/armanshatvoran/Workflows", "kind": "leaf" }
+{ "active": true, "cwd": "/Users/user/Workflows", "kind": "leaf" }
 ```
 The `kind` discriminator implies a recursive node type: leaf = `{active,cwd}`; a split is **inferred** branch `{kind:"branch"|"split", children:[TreeNode]}` — **branch was NOT observed** (only single-pane leaves present). Model = **recursive node tree with a `kind` discriminator**, not a flat list w/ parent pointers.
 

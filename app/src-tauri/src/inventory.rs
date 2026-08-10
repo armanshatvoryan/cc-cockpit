@@ -1016,8 +1016,8 @@ mod tests {
     #[ignore]
     fn real_audit_sanity() {
         let m = load_audit_matrix(vec![
-            "/Users/armanshatvoran/Workflows".into(),
-            "/Users/armanshatvoran/Workflows/cc-cockpit".into(),
+            "/Users/user/Workflows".into(),
+            "/Users/user/Workflows/cc-cockpit".into(),
         ])
         .unwrap();
         eprintln!(
