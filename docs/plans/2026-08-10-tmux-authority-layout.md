@@ -101,3 +101,9 @@ v1 of the mirror pushed `select-layout tiled` on EVERY grid push, so a user's
   edgePx math handles panes spanning row boundaries.
 - Killing the every-push re-tile also kills accepted risk (a), the
   push↔re-tile oscillation.
+- Follow-up `00883d4`: ⌘D auto-direction — splits along the focused pane's
+  longer RENDERED axis (rect cells × cell px), so repeated ⌘D distributes
+  evenly instead of piling skinny columns. ⌘⇧D stays forced-stack.
+- ✅ LIVE SMOKE PASSED 2026-08-10 (installed 0.1.3 rebuild, user-confirmed:
+  no garble, splits survive + distribute evenly). **MERGED via PR #12** →
+  main @ `9c53994`.
