@@ -445,4 +445,4 @@ iteration #5 returning; every #5-#7 failure mode addressed:
   Cost: the pane's LOCAL xterm scrollback is dropped on an actual resize —
   owner-accepted 2026-08-12 (tmux still holds real history).
 Tests: compose_screen_replay ×2 (LF→CRLF + cursor CUP; leading blank rows
-kept). Suite 131/0. tsc + vite clean. Live eyeball PENDING (user-gated).
+kept). Suite 131/0. tsc + vite clean. ✅ LIVE-SMOKED by user 2026-08-12 ("works") — revisit garble self-heals, no Ctrl+L. MERGED via PR #15 → main @ 7e8d467.
