@@ -595,6 +595,12 @@ export function revealInFinder(path: string): Promise<void> {
   return invoke<void>("reveal_in_finder", { path });
 }
 
+/** Open an http(s) URL in the default browser (backend rejects other schemes —
+ *  OSC 8 URIs are untrusted terminal output). Backs the xterm linkHandler. */
+export function openUrl(url: string): Promise<void> {
+  return invoke<void>("open_url", { url });
+}
+
 /** New File / New Folder: create `name` under `parent`. Backend validates the
  *  name to a single safe segment (no traversal) and never clobbers. Returns the
  *  created absolute path. */

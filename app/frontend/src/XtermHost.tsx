@@ -24,6 +24,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import {
   onPaneData,
+  openUrl,
   paneSendKeys,
   warmStart,
   type LayoutRect,
@@ -84,6 +85,15 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       // cannot read the stylesheet's custom properties. The effect below keeps
       // it in step when the user flips the theme.
       theme: termPalette(),
+      // OSC 8 hyperlinks: xterm's default activate calls confirm() +
+      // window.open(), both dead in WKWebView (clicks silently no-op). Route
+      // through the backend, which scheme-gates to http(s) and hands the URL
+      // to the default browser.
+      linkHandler: {
+        activate: (_e, uri) => {
+          void openUrl(uri).catch((err) => console.error("open_url:", err));
+        },
+      },
     });
 
     term.open(hostEl);

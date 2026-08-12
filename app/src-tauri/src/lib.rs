@@ -414,6 +414,39 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
     filetree::reveal_in_finder(&path)
 }
 
+/// True iff `url` is an http(s) URL safe to hand to `open`. OSC 8 link URIs
+/// arrive from UNTRUSTED terminal output (any program — or any AI agent — can
+/// print one), and `open <uri>` dispatches by scheme to arbitrary apps
+/// (`file:`, `ssh:`, `x-apple.systempreferences:` …), so only browser-bound
+/// web schemes pass. Control chars / whitespace rejected outright.
+fn is_web_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return false;
+    }
+    !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Open an http(s) URL in the user's default browser. Backs the xterm OSC 8
+/// `linkHandler` (WKWebView implements neither `confirm()` nor `window.open`,
+/// so xterm's default activate is a silent no-op in Tauri). URL is passed as
+/// its own argv element (no shell); scheme-gated by `is_web_url`.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !is_web_url(&url) {
+        return Err(format!("refusing to open non-web url: {url}"));
+    }
+    let status = std::process::Command::new("open")
+        .arg(&url)
+        .status()
+        .map_err(|e| format!("spawn open: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("open failed".into())
+    }
+}
+
 /// File-tree New File / New Folder (v1.1): create `name` under `parent`. `name`
 /// is validated to a single safe path segment (no traversal); never clobbers.
 #[tauri::command]
@@ -745,6 +778,7 @@ pub fn run() {
             home_dir,
             discover_repos,
             reveal_in_finder,
+            open_url,
             create_entry,
             trash_path,
             watch_dirs,
@@ -837,5 +871,36 @@ mod tests {
         let d = d.to_string_lossy().into_owned();
         let s = format!("__CCPATH__{d}__CCEND__");
         assert_eq!(parse_path_capture(&s).as_deref(), Some(d.as_str()));
+    }
+
+    use super::is_web_url;
+
+    #[test]
+    fn web_url_accepts_http_and_https() {
+        assert!(is_web_url("https://github.com/pull/12"));
+        assert!(is_web_url("http://localhost:8931/en/"));
+        // Scheme match is case-insensitive per RFC 3986.
+        assert!(is_web_url("HTTPS://example.com"));
+    }
+
+    #[test]
+    fn web_url_rejects_non_web_schemes() {
+        // OSC 8 URIs come from untrusted terminal output — only the browser-safe
+        // schemes may reach `open`, which would otherwise launch arbitrary apps.
+        assert!(!is_web_url("file:///etc/passwd"));
+        assert!(!is_web_url("javascript:alert(1)"));
+        assert!(!is_web_url("ssh://evil.example"));
+        assert!(!is_web_url("x-apple.systempreferences:com.apple.preference"));
+        assert!(!is_web_url(""));
+        // Prefix must be a real scheme, not a lookalike.
+        assert!(!is_web_url("httpsx://example.com"));
+        assert!(!is_web_url("https:/example.com"));
+    }
+
+    #[test]
+    fn web_url_rejects_whitespace_and_control_chars() {
+        assert!(!is_web_url("https://a.com/\u{7}"));
+        assert!(!is_web_url("https://a.com/ b"));
+        assert!(!is_web_url("https://a.com/\nb"));
     }
 }
