@@ -401,3 +401,48 @@ The arc is closed. 8 root causes over iterations #5-#6.
   pane id overwrites its entry on remount).
 - Engine still swallows tmux `%error` frames (fire-and-forget) — pre-existing,
   unrelated to this arc, worth its own pass.
+
+## ROOT CAUSE #11 (mode 7 — "revisit garble", found 2026-08-12, post-mirror)
+User (on v0.1.3 + PRs #12-#14): tabs garble after REVISITING; ⌘D+⌘W or Ctrl+L
+still fixes. Mechanism (code-evidenced, distinct from #6/#9/#10):
+- `pushGrid` sizes the ACTIVE window only — background windows keep a stale
+  size until the user switches back (by design since iteration #6).
+- Revisit after the container changed (app-window resize, sidebar toggle,
+  relaunch) ⇒ single-shot `resize-window` on the arriving window ⇒ SIGWINCH ⇒
+  the pane's TUI repaints IMMEDIATELY, and the bytes stream in via `pane:data`
+  (~16ms coalescing) — while the xterm's `term.resize` lags behind through the
+  debounced %layout-change (120ms) → refreshState → reconcile → rect round-trip
+  (~150-250ms total).
+- The repaint lands in a wrong-sized buffer ⇒ diverges from tmux's grid. Claude
+  Code is a differential renderer in the normal buffer (#3's insight): it never
+  repaints unchanged rows, so the divergence sticks.
+- Why active-tab drag-resize stays clean: the SIGWINCH storm keeps producing
+  repaints after the xterm catches up. A revisit resize is one-shot — one
+  repaint, inside the race window, permanent.
+- Why ⌘D+⌘W / Ctrl+L cure it: extra full-repaint rounds at a settled size.
+- tmux's own grid is clean throughout (Ctrl+L proves it) — pure mirror-side
+  divergence.
+
+## FIX #11 — capture-based post-resize resync (branch fix/revisit-resize-resync)
+Replay tmux's clean visible grid into the diverged xterm. Explicitly NOT
+iteration #5 returning; every #5-#7 failure mode addressed:
+- NO keystroke injection (#7): capture-replay, `warm_start_screen` re-added
+  (removed 5c7630a as dead code) — now composes `\n`→`\r\n` (xterm has no
+  convertEol; bare LF stairsteps), NO edge-trim (a blank top row is a real grid
+  row; trimming shifts everything — trim_blank_edges stays scrollback-only),
+  and appends a 1-based CUP from tmux's real `#{cursor_x}/#{cursor_y}` so the
+  next differential frame starts from the right cell.
+- Pane-scoped, not broadcast (#7): XtermHost schedules a resync ONLY when its
+  own rect size actually changed after the first sizing (mount is excluded —
+  warm_start covers it).
+- Quiescence-gated + dirty-retry (#3): 300ms debounce (drag storms collapse),
+  250ms output-quiet gate polled at 150ms, 2s cap for streaming panes; if
+  output lands during the capture RPC, retry once.
+- Visible-grid only (#6): no scrollback in the replay; escape-level clear
+  (2J/3J/H) first — NOT term.reset(), which would wipe terminal modes
+  (application cursor keys, bracketed paste, mouse tracking) the capture
+  cannot restore.
+  Cost: the pane's LOCAL xterm scrollback is dropped on an actual resize —
+  owner-accepted 2026-08-12 (tmux still holds real history).
+Tests: compose_screen_replay ×2 (LF→CRLF + cursor CUP; leading blank rows
+kept). Suite 131/0. tsc + vite clean. Live eyeball PENDING (user-gated).

@@ -42,6 +42,22 @@ fn trim_blank_edges(s: &str) -> String {
     }
 }
 
+/// Build the byte stream that repaints an xterm from a visible-grid capture.
+///
+/// capture-pane joins rows with bare `\n`; xterm is not in convertEol mode, so
+/// rows are rejoined with `\r\n` (a bare LF keeps the column and stairsteps).
+/// The capture is NOT edge-trimmed: after a `term.reset()` every visible row —
+/// blank ones included — must land on its own grid row or everything below
+/// shifts. `cursor` is tmux's real (x, y) for the pane, re-asserted with a
+/// 1-based CUP so the next differential frame starts from the right cell.
+fn compose_screen_replay(capture: &str, cursor: Option<(u32, u32)>) -> String {
+    let mut buf = capture.replace('\n', "\r\n");
+    if let Some((x, y)) = cursor {
+        buf.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+    }
+    buf
+}
+
 // ── Snapshot / return DTOs (camelCase for the JS frontend) ───────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -850,6 +866,45 @@ impl SessionManager {
         }
     }
 
+    /// Like `warm_start` but the VISIBLE grid ONLY (no `-S -`, no scrollback),
+    /// verbatim (no edge-trim) and with tmux's real cursor position re-asserted.
+    /// Used by the post-resize resync (bug #11, revisit garble): a single-shot
+    /// `resize-window` at tab switch makes the pane's TUI repaint into an xterm
+    /// that is still at its OLD size (`term.resize` lags via the debounced
+    /// %layout-change → refreshState round-trip), so the xterm buffer diverges
+    /// from tmux's grid and — for a differential renderer like Claude Code —
+    /// stays diverged until a full repaint. tmux's own grid is clean (= what
+    /// Ctrl+L shows); this replays exactly that, without keystroke injection.
+    pub fn warm_start_screen(&self, pane_id: &str) -> Result<String, String> {
+        let out = tmux::tmux(&["capture-pane", "-p", "-e", "-t", pane_id])?;
+        if !out.ok() {
+            return Err(out.stderr.trim().to_string());
+        }
+        // Best-effort cursor: a failed query just skips the CUP (the replay is
+        // still aligned; only the cursor cell is off until the next output).
+        let cursor = tmux::tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{cursor_x} #{cursor_y}",
+        ])
+        .ok()
+        .filter(|o| o.ok())
+        .and_then(|o| {
+            let s = o.stdout.trim().to_string();
+            let mut it = s.split_whitespace();
+            match (
+                it.next().and_then(|v| v.parse::<u32>().ok()),
+                it.next().and_then(|v| v.parse::<u32>().ok()),
+            ) {
+                (Some(x), Some(y)) => Some((x, y)),
+                _ => None,
+            }
+        });
+        Ok(B64.encode(compose_screen_replay(&out.stdout, cursor).as_bytes()))
+    }
+
     /// Tear down: detach the control client, then kill the cockpit session on the
     /// PRIVATE socket only. NEVER `kill-server` (would also kill the default
     /// socket's server if mis-targeted — we always pass -L cockpit, but kill the
@@ -986,6 +1041,27 @@ mod tests {
     fn trim_blank_edges_all_blank_is_empty() {
         assert_eq!(trim_blank_edges("\n\n\n"), "");
         assert_eq!(trim_blank_edges("\x1b[0m\n  \n"), "");
+    }
+
+    #[test]
+    fn compose_screen_replay_converts_lf_and_restores_cursor() {
+        // capture-pane joins rows with bare \n; xterm has no convertEol, so a
+        // bare LF would stairstep (next row starts at the previous row's end
+        // column). Rows must be rejoined with \r\n. The cursor lands wherever
+        // the write ends, so tmux's real cursor position is re-asserted with a
+        // 1-based CUP.
+        let out = compose_screen_replay("a\nb\n", Some((3, 1)));
+        assert_eq!(out, "a\r\nb\r\n\x1b[2;4H");
+    }
+
+    #[test]
+    fn compose_screen_replay_keeps_leading_blank_rows() {
+        // The visible grid is replayed VERBATIM after a term.reset(): a blank
+        // top row is a real grid row (e.g. a TUI's margin) — trimming it would
+        // shift every subsequent row up and misalign the next differential
+        // frame. (trim_blank_edges is for the scrollback warm_start only.)
+        let out = compose_screen_replay("\n\nprompt %\n", None);
+        assert_eq!(out, "\r\n\r\nprompt %\r\n");
     }
 
     #[test]
