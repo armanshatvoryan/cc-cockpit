@@ -500,7 +500,8 @@ export function warmStart(paneId: string): Promise<WarmStartPayload> {
  * Visible-grid-only replay with cursor restore, for the post-resize resync
  * (bug #11, revisit garble). Replays tmux's clean visible grid (= what Ctrl+L
  * shows) into an xterm whose buffer diverged during a single-shot window
- * resize. No scrollback — the caller `term.reset()`s first.
+ * resize. No scrollback — the caller clears the buffer first (escape-level
+ * clear, not `term.reset()`, which would wipe terminal modes).
  */
 export function warmStartScreen(paneId: string): Promise<WarmStartPayload> {
   return invoke<WarmStartPayload>("warm_start_screen", { paneId });

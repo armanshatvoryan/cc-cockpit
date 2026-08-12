@@ -131,14 +131,14 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     // like Claude Code never repaints them again — the garble sticks until a
     // manual Ctrl+L. tmux's own grid is clean the whole time, so the repair is
     // to replay it: wait for the pane to go quiet, capture the visible grid
-    // (`warm_start_screen`, cursor restored), reset, write.
+    // (`warm_start_screen`, cursor restored), clear, write.
     //
     // This is NOT iteration #5 coming back: no keystroke injection (root
     // cause #7), pane-scoped (only a pane whose size actually CHANGED, never
     // a broadcast), quiescence-gated with a dirty-retry (root cause #3), and
     // the capture is visible-grid-only (the old full-scrollback replay was
-    // root cause #6). Cost: `term.reset()` drops this pane's local scrollback
-    // on an actual resize — accepted (owner ruling 2026-08-12).
+    // root cause #6). Cost: the clear (2J/3J) drops this pane's local
+    // scrollback on an actual resize — accepted (owner ruling 2026-08-12).
     const RESYNC_DEBOUNCE_MS = 300; // drag storms collapse into one resync
     const RESYNC_QUIET_MS = 250; // pane output must be quiet this long
     const RESYNC_MAX_WAIT_MS = 2000; // streaming panes: resync anyway
@@ -168,7 +168,14 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
               attempt(retriesLeft - 1);
               return;
             }
-            term.reset();
+            // Clear via escape codes, NOT term.reset(): reset() also wipes
+            // terminal MODES (application cursor keys, bracketed paste, mouse
+            // tracking) that the capture cannot restore — arrows and scroll
+            // would break in the resynced pane until its app re-asserted them.
+            // 2J = clear screen, 3J = clear scrollback, H = home. Same visible
+            // effect as reset, modes untouched (Ctrl+L never touches them
+            // either).
+            term.write("\x1b[2J\x1b[3J\x1b[H");
             if (w.bytesB64) term.write(b64ToBytes(w.bytesB64));
           })
           .catch(() => {}); // pane gone mid-resync — cleanup handles it

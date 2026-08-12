@@ -438,7 +438,10 @@ iteration #5 returning; every #5-#7 failure mode addressed:
 - Quiescence-gated + dirty-retry (#3): 300ms debounce (drag storms collapse),
   250ms output-quiet gate polled at 150ms, 2s cap for streaming panes; if
   output lands during the capture RPC, retry once.
-- Visible-grid only (#6): no scrollback in the replay; `term.reset()` first.
+- Visible-grid only (#6): no scrollback in the replay; escape-level clear
+  (2J/3J/H) first — NOT term.reset(), which would wipe terminal modes
+  (application cursor keys, bracketed paste, mouse tracking) the capture
+  cannot restore.
   Cost: the pane's LOCAL xterm scrollback is dropped on an actual resize —
   owner-accepted 2026-08-12 (tmux still holds real history).
 Tests: compose_screen_replay ×2 (LF→CRLF + cursor CUP; leading blank rows
