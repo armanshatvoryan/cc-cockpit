@@ -330,7 +330,25 @@ button {
   outline: none;
 }
 
-/* ── Git badge (dev#2) — branch + dirty dot + ahead/behind on a tab chip ─── */
+/* Needs-input count pill — loud per-tab notification while Claude waits. */
+.tab-attn-badge {
+  flex: 0 0 auto;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--danger-ring);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* ── Cwd badge (dev#2) — folder name + git dirty dot + ahead/behind on a tab
+   chip; branch + counters live in the tooltip ─── */
 .git-badge {
   display: inline-flex;
   align-items: center;

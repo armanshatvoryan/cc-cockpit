@@ -135,6 +135,19 @@ export function tabDisplayName(tab: TabInfo): string {
   return tabNameOverrides[tab.tabId] ?? (tab.name || tab.tabId);
 }
 
+/** First-pane cwd for a tab, "" when no pane / cwd yet. */
+export function tabCwd(tab: TabInfo): string {
+  return store.panes.find((p) => p.paneId === tab.paneIds[0])?.cwd ?? "";
+}
+
+/** Folder basename of the tab's working directory ("" when unknown). */
+export function tabFolderName(tab: TabInfo): string {
+  const cwd = tabCwd(tab).replace(/\/+$/, "");
+  if (!cwd) return "";
+  const base = cwd.slice(cwd.lastIndexOf("/") + 1);
+  return base || cwd;
+}
+
 /** Aggregate attention for a tab: does any pane want input or is it dead? */
 export function tabAttention(tab: TabInfo): "needs_input" | "working" | "none" {
   const panes = store.panes.filter(
@@ -143,6 +156,15 @@ export function tabAttention(tab: TabInfo): "needs_input" | "working" | "none" {
   if (panes.some((p) => p.status === "NEEDS_INPUT")) return "needs_input";
   if (panes.some((p) => p.status === "WORKING")) return "working";
   return "none";
+}
+
+/** How many panes in this tab are waiting on the user right now. */
+export function tabNeedsInputCount(tab: TabInfo): number {
+  return store.panes.filter(
+    (p) =>
+      (tab.paneIds.includes(p.paneId) || p.tabId === tab.tabId) &&
+      p.status === "NEEDS_INPUT",
+  ).length;
 }
 
 // ── Reconcile ──────────────────────────────────────────────────────────────────
