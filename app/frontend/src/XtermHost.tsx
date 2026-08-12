@@ -27,6 +27,7 @@ import {
   openUrl,
   paneSendKeys,
   warmStart,
+  warmStartScreen,
   type LayoutRect,
   type PaneDataPayload,
 } from "./ipc";
@@ -120,14 +121,75 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       }, 100);
     }
 
+    // ── Post-resize resync (bug #11, revisit garble) ──────────────────────
+    //
+    // A single-shot `resize-window` (typically at tab switch: background
+    // windows are sized on arrival) makes the pane's TUI repaint IMMEDIATELY
+    // on SIGWINCH, while this terminal's `term.resize` lags behind it by the
+    // debounced %layout-change → refreshState round-trip (~150-250ms). The
+    // repaint bytes land in a wrong-sized buffer, and a differential renderer
+    // like Claude Code never repaints them again — the garble sticks until a
+    // manual Ctrl+L. tmux's own grid is clean the whole time, so the repair is
+    // to replay it: wait for the pane to go quiet, capture the visible grid
+    // (`warm_start_screen`, cursor restored), reset, write.
+    //
+    // This is NOT iteration #5 coming back: no keystroke injection (root
+    // cause #7), pane-scoped (only a pane whose size actually CHANGED, never
+    // a broadcast), quiescence-gated with a dirty-retry (root cause #3), and
+    // the capture is visible-grid-only (the old full-scrollback replay was
+    // root cause #6). Cost: `term.reset()` drops this pane's local scrollback
+    // on an actual resize — accepted (owner ruling 2026-08-12).
+    const RESYNC_DEBOUNCE_MS = 300; // drag storms collapse into one resync
+    const RESYNC_QUIET_MS = 250; // pane output must be quiet this long
+    const RESYNC_MAX_WAIT_MS = 2000; // streaming panes: resync anyway
+    let lastOutputAt = 0;
+    let resyncTimer: number | undefined;
+    const scheduleResync = () => {
+      if (resyncTimer) clearTimeout(resyncTimer);
+      const startedAt = Date.now();
+      const attempt = (retriesLeft: number) => {
+        if (disposed) return;
+        const quietFor = Date.now() - lastOutputAt;
+        if (
+          quietFor < RESYNC_QUIET_MS &&
+          Date.now() - startedAt < RESYNC_MAX_WAIT_MS
+        ) {
+          resyncTimer = window.setTimeout(() => attempt(retriesLeft), 150);
+          return;
+        }
+        const outputMark = lastOutputAt;
+        warmStartScreen(paneId)
+          .then((w) => {
+            if (disposed) return;
+            // Output landed while the capture RPC was in flight — the capture
+            // may hold a stale mid-frame. Retry once; then take what we have
+            // (a busy pane repaints itself soon anyway).
+            if (lastOutputAt !== outputMark && retriesLeft > 0) {
+              attempt(retriesLeft - 1);
+              return;
+            }
+            term.reset();
+            if (w.bytesB64) term.write(b64ToBytes(w.bytesB64));
+          })
+          .catch(() => {}); // pane gone mid-resync — cleanup handles it
+      };
+      resyncTimer = window.setTimeout(() => attempt(1), RESYNC_DEBOUNCE_MS);
+    };
+
     // Mirror the tmux pane's size exactly. Runs on mount (rect is usually
     // already known from the boot list_state) and on every layout change.
     // Hidden tabs resize too — no layout box needed, unlike the old fit().
+    // Any size change AFTER the first applied rect schedules the resync
+    // above: the first sizing is mount (warm_start replays content for it),
+    // every later one is a live tmux resize this buffer just diverged from.
+    let sizedOnce = false;
     createEffect(() => {
       const r = props.rect;
-      if (r && r.w > 0 && r.h > 0 && (term.cols !== r.w || term.rows !== r.h)) {
-        term.resize(r.w, r.h);
-      }
+      if (!r || !(r.w > 0) || !(r.h > 0)) return;
+      const changed = term.cols !== r.w || term.rows !== r.h;
+      if (changed) term.resize(r.w, r.h);
+      if (changed && sizedOnce) scheduleResync();
+      sizedOnce = true;
     });
 
     // Output: write decoded bytes verbatim (xterm is a full VT emulator).
@@ -135,6 +197,7 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     let disposed = false;
     onPaneData((p: PaneDataPayload) => {
       if (p.paneId !== paneId) return;
+      lastOutputAt = Date.now(); // resync quiescence gate reads this
       term.write(b64ToBytes(p.bytesB64));
     }).then((u) => {
       if (disposed) {
@@ -200,15 +263,16 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       term.options.theme = termPalette();
     });
 
-    // NOTE: no post-resize repair step here. Iteration #5 listened for a
-    // `cockpit:resync` broadcast and sent a synthetic Ctrl+L; tmux cannot tell
-    // that from the user typing it, and in Claude Code it wipes the rendered
-    // transcript (root cause #7). A resize is now just a resize — the app
-    // repaints itself on SIGWINCH, as under any other terminal emulator.
+    // NOTE: the post-resize resync above is CAPTURE-based, never keystrokes.
+    // Iteration #5 listened for a `cockpit:resync` broadcast and sent a
+    // synthetic Ctrl+L; tmux cannot tell that from the user typing it, and in
+    // Claude Code it wipes the rendered transcript (root cause #7). Synthetic
+    // input is never a repair mechanism.
 
     // Teardown — critical for HMR (else leaked WebGL contexts) and pane kill.
     onCleanup(() => {
       disposed = true;
+      if (resyncTimer) clearTimeout(resyncTimer);
       if (resizeTimer) clearTimeout(resizeTimer);
       if (measureTimer) clearInterval(measureTimer);
       ro.disconnect();

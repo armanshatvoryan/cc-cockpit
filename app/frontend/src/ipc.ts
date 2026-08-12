@@ -497,6 +497,16 @@ export function warmStart(paneId: string): Promise<WarmStartPayload> {
 }
 
 /**
+ * Visible-grid-only replay with cursor restore, for the post-resize resync
+ * (bug #11, revisit garble). Replays tmux's clean visible grid (= what Ctrl+L
+ * shows) into an xterm whose buffer diverged during a single-shot window
+ * resize. No scrollback — the caller `term.reset()`s first.
+ */
+export function warmStartScreen(paneId: string): Promise<WarmStartPayload> {
+  return invoke<WarmStartPayload>("warm_start_screen", { paneId });
+}
+
+/**
  * Per-worktree git status for a cwd (dev#2). Resolves to `null` when `cwd` is not
  * a git repo (the backend returns `Ok(None)`); rejects only if `git` is missing.
  */

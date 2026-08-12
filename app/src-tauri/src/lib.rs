@@ -285,6 +285,21 @@ fn warm_start(state: State<'_, AppState>, pane_id: String) -> Result<WarmStartPa
     Ok(WarmStartPayload { bytes_b64 })
 }
 
+/// Visible-grid-only replay with cursor restore, for the post-resize resync
+/// (bug #11, revisit garble). A single-shot window resize makes the pane's TUI
+/// repaint into an xterm still at its old size; the diverged buffer is repaired
+/// by replaying tmux's clean visible grid (= what Ctrl+L shows) — no scrollback,
+/// no keystroke injection.
+#[tauri::command]
+fn warm_start_screen(
+    state: State<'_, AppState>,
+    pane_id: String,
+) -> Result<WarmStartPayload, String> {
+    let mgr = state.mgr.lock().unwrap();
+    let bytes_b64 = mgr.warm_start_screen(&pane_id)?;
+    Ok(WarmStartPayload { bytes_b64 })
+}
+
 /// Inventory mission-control (P2-F1): the unified read-only browser of skills,
 /// subagents, plugins, and MCP servers across the global `~/.claude` scope and
 /// (when `project_path` is the active tab's cwd) the per-project `.claude/`
@@ -764,6 +779,7 @@ pub fn run() {
             interrupt_pane,
             list_state,
             warm_start,
+            warm_start_screen,
             load_inventory,
             toggle_plugin,
             plugin_toggle_preview,
