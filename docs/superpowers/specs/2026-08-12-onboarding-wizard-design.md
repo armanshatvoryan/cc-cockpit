@@ -88,6 +88,8 @@ New module `src-tauri/src/onboarding.rs`.
   `onboarding:install-done { tool, exit_code }`.
 - Only one install may run at a time (guard in the manager); the wizard UI
   disables the other Install button meanwhile.
+- A **Cancel** button is shown while an install runs — kills the child
+  (same process-group kill as wizard-close) and re-enables the row.
 - Child process is killed if the wizard/app closes mid-install (process-group
   kill, same pattern as other spawned helpers).
 - Failure (non-zero exit) → log area auto-expands + copy-paste fallback shown.
@@ -105,7 +107,9 @@ New module `src-tauri/src/onboarding.rs`.
   treat all tools as unknown, show copy-paste blocks, allow Skip.
 - Corrupt settings file: existing `read_settings` error path unchanged; wizard
   treats it as first run but must not clobber the corrupt file until the user
-  finishes (same best-effort stance as `apply_at_startup`).
+  finishes **or skips** (same best-effort stance as `apply_at_startup`).
+- Post-skip with tmux still missing: the `cockpit_init` failure toast should
+  mention Settings → "Show welcome guide" so the route back is discoverable.
 - Re-entry safety: wizard finish writes settings via existing atomic
   tmp+rename path.
 
