@@ -1,5 +1,7 @@
 // TabBar — one chip per tab. Active is highlighted; an aggregate attention dot
-// shows when any pane in the tab needs input (red) or is working (blue).
+// shows when any pane in the tab needs input (red) or is working (blue), and a
+// red count pill appears while any pane is waiting on the user. The cwd badge
+// shows the tab's folder name (branch + git counters live in its tooltip).
 //
 // Interactions:
 //   click           -> switch active tab
@@ -18,6 +20,9 @@ import {
   renameTabLocal,
   tabDisplayName,
   tabAttention,
+  tabCwd,
+  tabFolderName,
+  tabNeedsInputCount,
   gitStatus,
 } from "../store";
 
@@ -28,8 +33,20 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
 
   const active = () => activeTabId() === props.tab.tabId;
   const attention = () => tabAttention(props.tab);
-  // dev#2 — git status of this tab's first-pane cwd (null/absent ⇒ no badge).
+  const needsInput = () => tabNeedsInputCount(props.tab);
+  // dev#2 — git status of this tab's first-pane cwd (null/absent ⇒ git extras
+  // hidden; the badge itself shows the cwd folder and needs no repo).
   const git = () => gitStatus[props.tab.tabId];
+  const folder = () => tabFolderName(props.tab);
+  const badgeTitle = () => {
+    const g = git();
+    const gitPart = g
+      ? ` · ${g.branch} · ${g.changed} changed · ${g.untracked} untracked${
+          g.ahead ? ` · ↑${g.ahead}` : ""
+        }${g.behind ? ` · ↓${g.behind}` : ""}`
+      : "";
+    return `${tabCwd(props.tab)}${gitPart}`;
+  };
 
   function startRename() {
     setDraft(tabDisplayName(props.tab));
@@ -87,26 +104,30 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
         >
           <span class="tab-name">{tabDisplayName(props.tab)}</span>
         </Show>
-        <Show when={git()}>
-          {(g) => (
-            <span
-              class="git-badge"
-              title={`${g().branch} · ${g().changed} changed · ${g().untracked} untracked${
-                g().ahead ? ` · ↑${g().ahead}` : ""
-              }${g().behind ? ` · ↓${g().behind}` : ""}`}
-            >
-              <span class="git-branch">{g().branch}</span>
-              <Show when={g().dirty}>
-                <span class="git-dirty" />
-              </Show>
-              <Show when={g().ahead > 0}>
-                <span class="git-ab">↑{g().ahead}</span>
-              </Show>
-              <Show when={g().behind > 0}>
-                <span class="git-ab">↓{g().behind}</span>
-              </Show>
-            </span>
-          )}
+        <Show when={needsInput() > 0}>
+          <span class="tab-attn-badge" title="Claude is waiting for your input">
+            {needsInput()}
+          </span>
+        </Show>
+        <Show when={folder()}>
+          <span class="git-badge" title={badgeTitle()}>
+            <span class="git-branch">{folder()}</span>
+            <Show when={git()}>
+              {(g) => (
+                <>
+                  <Show when={g().dirty}>
+                    <span class="git-dirty" />
+                  </Show>
+                  <Show when={g().ahead > 0}>
+                    <span class="git-ab">↑{g().ahead}</span>
+                  </Show>
+                  <Show when={g().behind > 0}>
+                    <span class="git-ab">↓{g().behind}</span>
+                  </Show>
+                </>
+              )}
+            </Show>
+          </span>
         </Show>
         <button class="tab-close" title="Close tab" onClick={onCloseClick}>
           ×
