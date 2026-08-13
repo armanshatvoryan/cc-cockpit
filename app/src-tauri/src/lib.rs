@@ -789,6 +789,7 @@ pub fn run() {
             settings::load_settings,
             settings::save_settings,
             settings::effective_default_cwd,
+            onboarding::check_prereqs,
             gitstatus::git_status_snapshot,
         ])
         .setup(|app| {

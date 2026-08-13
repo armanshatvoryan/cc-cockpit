@@ -577,6 +577,28 @@ export function effectiveDefaultCwd(): Promise<string> {
   return invoke<string>("effective_default_cwd");
 }
 
+/** Presence/health of one probed tool (onboarding wizard, step 1). */
+export interface ToolStatus {
+  found: boolean;
+  /** Raw version line (e.g. `"tmux 3.4"`), null when not found. */
+  version: string | null;
+  /** tmux: found AND version >= 3.3. claude: same as `found`. */
+  ok: boolean;
+}
+
+/** Everything the wizard's environment step renders. */
+export interface PrereqReport {
+  tmux: ToolStatus;
+  claude: ToolStatus;
+  brew: boolean;
+  npm: boolean;
+}
+
+/** Probe the login-shell environment for tmux / claude / brew / npm. */
+export function checkPrereqs(): Promise<PrereqReport> {
+  return invoke<PrereqReport>("check_prereqs");
+}
+
 /** One sibling project in the repo-picker dropdown. */
 export interface RepoEntry {
   name: string;
