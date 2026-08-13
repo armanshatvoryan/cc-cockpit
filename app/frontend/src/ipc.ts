@@ -599,6 +599,41 @@ export function checkPrereqs(): Promise<PrereqReport> {
   return invoke<PrereqReport>("check_prereqs");
 }
 
+/** The only installable tools — mirrors the Rust `PrereqTool` enum (kebab-case). */
+export type PrereqTool = "tmux" | "claude-cli";
+
+/** Start a one-click install. Resolves once SPAWNED — progress arrives via
+ *  `onInstallLine` / `onInstallDone`. Rejects if an install is already running. */
+export function installPrereq(tool: PrereqTool): Promise<void> {
+  return invoke("install_prereq", { tool });
+}
+
+/** Kill the running install's whole process group. No-op when idle. */
+export function cancelInstall(): Promise<void> {
+  return invoke("cancel_install");
+}
+
+export interface InstallLinePayload {
+  tool: PrereqTool;
+  line: string;
+}
+export interface InstallDonePayload {
+  tool: PrereqTool;
+  /** Process exit code; -1 when killed by a signal (cancel). 0 = success. */
+  exitCode: number;
+}
+
+export function onInstallLine(
+  handler: (p: InstallLinePayload) => void,
+): Promise<UnlistenFn> {
+  return listen<InstallLinePayload>("onboarding:install-line", (e) => handler(e.payload));
+}
+export function onInstallDone(
+  handler: (p: InstallDonePayload) => void,
+): Promise<UnlistenFn> {
+  return listen<InstallDonePayload>("onboarding:install-done", (e) => handler(e.payload));
+}
+
 /** One sibling project in the repo-picker dropdown. */
 export interface RepoEntry {
   name: string;

@@ -7,7 +7,7 @@
 import { onCleanup, onMount, Show, type Component } from "solid-js";
 import {
   store,
-  bootCockpit,
+  decideBoot,
   shutdownCockpit,
   newTab,
   clearError,
@@ -26,7 +26,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 
 export const App: Component = () => {
   onMount(() => {
-    void bootCockpit();
+    void decideBoot();
     void ftInitHome(); // resolve $HOME for the file-tree breadcrumb (cd-nav)
     installKeyboard();
   });

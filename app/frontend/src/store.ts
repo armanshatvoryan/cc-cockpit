@@ -311,7 +311,10 @@ export async function bootCockpit(): Promise<void> {
   try {
     state = await cockpitInit();
   } catch (e) {
-    setStore("error", `cockpit_init failed: ${String(e)}`);
+    const hint = wizardShownThisLaunch
+      ? " — open Settings (⌘,) → Show welcome guide to re-check prerequisites"
+      : "";
+    setStore("error", `cockpit_init failed: ${String(e)}${hint}`);
     setStore("ready", true); // still show the (empty) shell + the error
     return;
   }
@@ -862,7 +865,7 @@ export function setSettingsError(msg: string | null): void {
 }
 
 /** Read settings + the current effective dir off disk into the dialog. */
-async function reloadSettings(): Promise<void> {
+export async function reloadSettings(): Promise<void> {
   setSettings("loading", true);
   setSettings("error", null);
   try {
@@ -881,7 +884,16 @@ export async function setDefaultCwd(dir: string): Promise<void> {
   setSettings("saving", true);
   setSettings("error", null);
   try {
-    const next: CockpitSettings = { schemaVersion: 1 };
+    // Start from the file's current contents so unrelated fields
+    // (onboardingDone) survive a folder change.
+    let current: CockpitSettings = { schemaVersion: 1 };
+    try {
+      current = await loadSettings();
+    } catch {
+      /* corrupt file: best-effort — this save rewrites it cleanly */
+    }
+    const next: CockpitSettings = { ...current, schemaVersion: 1 };
+    delete next.defaultCwd;
     if (dir.trim()) next.defaultCwd = dir.trim();
     const effective = await saveSettings(next);
     setSettings("defaultCwd", next.defaultCwd ?? "");
@@ -903,6 +915,64 @@ export function closeSettings(): void {
 export function toggleSettings(): void {
   if (settingsOpen()) closeSettings();
   else openSettings();
+}
+
+// ── Onboarding (first-run wizard) ───────────────────────────────────────────
+
+const [onboardingOpen, setOnboardingOpen] = createSignal(false);
+const [onboardingMode, setOnboardingMode] = createSignal<"first-run" | "rerun">(
+  "first-run",
+);
+export { onboardingOpen, onboardingMode };
+
+/** True when this launch showed the wizard — the boot-failure toast then adds
+ *  a route-back hint (Skip with tmux still missing must stay recoverable). */
+let wizardShownThisLaunch = false;
+
+/** Boot decision, called once on mount instead of `bootCockpit()`: flag set ⇒
+ *  boot exactly as before; absent or settings unreadable ⇒ wizard first, boot
+ *  deferred until finish/skip. The corrupt-file case deliberately does NOT
+ *  rewrite the file here — only a finish/skip does. */
+export async function decideBoot(): Promise<void> {
+  let done = false;
+  try {
+    done = (await loadSettings()).onboardingDone === true;
+  } catch {
+    done = false; // corrupt settings file ⇒ treat as first run
+  }
+  if (done) {
+    void bootCockpit();
+  } else {
+    wizardShownThisLaunch = true;
+    setOnboardingMode("first-run");
+    setOnboardingOpen(true);
+  }
+}
+
+/** Finish OR skip (both persist the flag — the wizard must never nag twice),
+ *  close the wizard, and in first-run mode start the deferred boot. Re-run
+ *  mode (opened from Settings over a running app) never re-boots. */
+export async function finishOnboarding(): Promise<void> {
+  try {
+    let current: CockpitSettings = { schemaVersion: 1 };
+    try {
+      current = await loadSettings();
+    } catch {
+      /* corrupt file: the user chose finish/skip — overwriting now is the
+         spec'd behavior */
+    }
+    await saveSettings({ ...current, schemaVersion: 1, onboardingDone: true });
+  } catch (e) {
+    setStore("error", `Could not save onboarding state: ${e}`);
+  }
+  setOnboardingOpen(false);
+  if (onboardingMode() === "first-run") void bootCockpit();
+}
+
+/** Settings → "Show welcome guide": open over the running app. */
+export function openOnboardingRerun(): void {
+  setOnboardingMode("rerun");
+  setOnboardingOpen(true);
 }
 
 // ── Live team board (P3 step 3) ──────────────────────────────────────────────
