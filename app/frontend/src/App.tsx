@@ -14,6 +14,7 @@ import {
   sidebarVisible,
   ftInitHome,
   settingsOpen,
+  onboardingOpen,
 } from "./store";
 import { installKeyboard } from "./keyboard";
 import { TabBar } from "./components/TabBar";
@@ -23,6 +24,7 @@ import { InventoryPanel } from "./components/InventoryPanel";
 import { TeamBoardPanel } from "./components/TeamBoardPanel";
 import { SpinupDialog } from "./components/SpinupDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { OnboardingWizard } from "./components/OnboardingWizard";
 
 export const App: Component = () => {
   onMount(() => {
@@ -34,9 +36,17 @@ export const App: Component = () => {
 
   return (
     <div class="app">
+      <Show when={onboardingOpen()}>
+        <OnboardingWizard />
+      </Show>
+
       <Show
         when={store.ready}
-        fallback={<div class="boot">cockpit booting…</div>}
+        fallback={
+          <Show when={!onboardingOpen()}>
+            <div class="boot">cockpit booting…</div>
+          </Show>
+        }
       >
         <div class="app-body">
           <Show when={sidebarVisible()}>

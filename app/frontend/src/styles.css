@@ -2105,3 +2105,78 @@ button {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* ── Onboarding wizard ─────────────────────────────────────────────────── */
+
+.onboarding {
+  width: 560px;
+  max-width: 90vw;
+}
+.onb-stepmark {
+  margin-left: auto;
+  opacity: 0.6;
+  font-size: 12px;
+}
+.onb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+.onb-row-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.onb-row-title {
+  font-weight: 600;
+}
+.onb-badge {
+  width: 20px;
+  text-align: center;
+  font-weight: 700;
+  color: #e5534b;
+}
+.onb-badge.ok {
+  color: #3fb950;
+}
+.onb-cmd {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.15);
+  user-select: all; /* one click selects the whole command for copying */
+}
+.onb-row-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.onb-log {
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+.onb-shortcuts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+  margin: 10px 0;
+}
+.onb-key kbd {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: rgba(128, 128, 128, 0.15);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-right: 6px;
+}
