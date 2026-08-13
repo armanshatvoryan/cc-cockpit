@@ -35,7 +35,7 @@ use manager::{
     CloseTabResult, CockpitState, CreateTabResult, SessionManager, SplitPaneResult,
 };
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Shared base64 engine for re-encoding coalesced `pane:data` payloads (must
 /// match the engine's STANDARD alphabet so the frontend decodes identically).
@@ -749,6 +749,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
+        .manage(onboarding::InstallGuard::default())
         .invoke_handler(tauri::generate_handler![
             cockpit_init,
             create_tab,
@@ -790,6 +791,8 @@ pub fn run() {
             settings::save_settings,
             settings::effective_default_cwd,
             onboarding::check_prereqs,
+            onboarding::install_prereq,
+            onboarding::cancel_install,
             gitstatus::git_status_snapshot,
         ])
         .setup(|app| {
@@ -812,8 +815,17 @@ pub fn run() {
                 let _ = window.emit("cockpit:close-requested", ());
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // ⌘Q with an install running: the installer sits in its own
+            // process group (so Cancel can kill brew's children), which also
+            // means it would survive the app — kill it on exit instead.
+            if let tauri::RunEvent::Exit = event {
+                let guard = app.state::<onboarding::InstallGuard>();
+                onboarding::kill_running_install(&guard);
+            }
+        });
 }
 
 #[cfg(test)]

@@ -9,9 +9,12 @@
 //! sources /etc/zprofile + ~/.zprofile (Homebrew shellenv) — where tmux and
 //! brew actually live on a normal setup.
 
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Minimum tmux version the cockpit supports.
 const MIN_TMUX: (u32, u32) = (3, 3);
@@ -87,6 +90,46 @@ fn parse_probe_output(out: &str) -> PrereqReport {
     }
 }
 
+/// The only things the wizard can install. `install_prereq` takes this enum —
+/// never a string — so no user-controlled text can reach a shell. Serde
+/// (kebab-case) rejects unknown values at the IPC boundary.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PrereqTool {
+    Tmux,
+    ClaudeCli,
+}
+
+impl PrereqTool {
+    /// Hardcoded install command. `2>&1` merges stderr into the streamed log
+    /// so a single reader thread sees everything in order.
+    fn install_script(self) -> &'static str {
+        match self {
+            PrereqTool::Tmux => "brew install tmux 2>&1",
+            PrereqTool::ClaudeCli => "npm install -g @anthropic-ai/claude-code 2>&1",
+        }
+    }
+}
+
+/// Process-group id of the running install, if any. One install at a time —
+/// the wizard disables the other Install button while this is `Some`.
+#[derive(Default)]
+pub struct InstallGuard(pub Mutex<Option<u32>>);
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallLine {
+    tool: PrereqTool,
+    line: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallDone {
+    tool: PrereqTool,
+    exit_code: i32,
+}
+
 /// One login-shell round trip probing all four tools. `2>/dev/null` per tool:
 /// a missing binary prints an empty value instead of shell noise.
 const PROBE_SCRIPT: &str = "printf 'CC_TMUX=%s\\n' \"$(tmux -V 2>/dev/null)\"; \
@@ -106,9 +149,91 @@ pub async fn check_prereqs() -> Result<PrereqReport, String> {
     Ok(parse_probe_output(&String::from_utf8_lossy(&out.stdout)))
 }
 
+/// Start an install. Returns immediately; output streams via
+/// `onboarding:install-line` and completion via `onboarding:install-done`.
+#[tauri::command]
+pub fn install_prereq(
+    app: AppHandle,
+    guard: State<InstallGuard>,
+    tool: PrereqTool,
+) -> Result<(), String> {
+    let mut running = guard.0.lock().unwrap();
+    if running.is_some() {
+        return Err("an install is already running".into());
+    }
+
+    use std::os::unix::process::CommandExt;
+    let mut child = Command::new("zsh")
+        .args(["-lc", tool.install_script()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null()) // merged into stdout by the script's 2>&1
+        .process_group(0) // own group ⇒ cancel kills brew/npm's children too
+        .spawn()
+        .map_err(|e| format!("spawn installer: {e}"))?;
+    // With process_group(0) the child's pid IS its pgid.
+    *running = Some(child.id());
+    drop(running);
+
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            let _ = app2.emit("onboarding:install-line", InstallLine { tool, line });
+        }
+        // Killed-by-signal (cancel) has no exit code — report -1, non-zero.
+        let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+        *app2.state::<InstallGuard>().0.lock().unwrap() = None;
+        let _ = app2.emit("onboarding:install-done", InstallDone { tool, exit_code: code });
+    });
+    Ok(())
+}
+
+/// Kill the whole install process group (zsh + brew/npm + their children).
+/// Best-effort: the reader thread sees EOF and emits `install-done` itself.
+/// `/bin/kill` with a negative pgid avoids a libc dependency.
+pub fn kill_running_install(guard: &InstallGuard) {
+    if let Some(pgid) = *guard.0.lock().unwrap() {
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", &format!("-{pgid}")])
+            .status();
+    }
+}
+
+/// Frontend cancel button / wizard-close hook.
+#[tauri::command]
+pub fn cancel_install(guard: State<InstallGuard>) {
+    kill_running_install(&guard);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_enum_rejects_everything_but_the_two_variants() {
+        assert_eq!(
+            serde_json::from_str::<PrereqTool>("\"tmux\"").unwrap(),
+            PrereqTool::Tmux
+        );
+        assert_eq!(
+            serde_json::from_str::<PrereqTool>("\"claude-cli\"").unwrap(),
+            PrereqTool::ClaudeCli
+        );
+        assert!(serde_json::from_str::<PrereqTool>("\"tmux; rm -rf /\"").is_err());
+        assert!(serde_json::from_str::<PrereqTool>("\"brew\"").is_err());
+        assert!(serde_json::from_str::<PrereqTool>("\"\"").is_err());
+    }
+
+    #[test]
+    fn install_scripts_are_exactly_the_two_known_commands() {
+        assert_eq!(PrereqTool::Tmux.install_script(), "brew install tmux 2>&1");
+        assert_eq!(
+            PrereqTool::ClaudeCli.install_script(),
+            "npm install -g @anthropic-ai/claude-code 2>&1"
+        );
+    }
 
     #[test]
     fn tmux_version_parse() {
