@@ -138,14 +138,17 @@ printf 'CC_BREW=%s\\n' \"$(command -v brew 2>/dev/null)\"; \
 printf 'CC_NPM=%s\\n' \"$(command -v npm 2>/dev/null)\"";
 
 /// Probe the login-shell environment for the cockpit's prerequisites. Async so
-/// the (up to ~2 s — `claude --version` pays node startup) probe never runs on
-/// the main thread; the wizard shows a spinner meanwhile.
+/// the (up to ~2 s — `claude --version` pays node startup) probe never blocks
+/// the async runtime; wrapped in `spawn_blocking` to avoid hogging a worker thread.
+/// The wizard shows a spinner meanwhile.
 #[tauri::command]
 pub async fn check_prereqs() -> Result<PrereqReport, String> {
-    let out = Command::new("zsh")
-        .args(["-lc", PROBE_SCRIPT])
-        .output()
-        .map_err(|e| format!("spawn zsh probe: {e}"))?;
+    let out = tauri::async_runtime::spawn_blocking(|| {
+        Command::new("zsh").args(["-lc", PROBE_SCRIPT]).output()
+    })
+    .await
+    .map_err(|e| format!("probe task: {e}"))?
+    .map_err(|e| format!("spawn zsh probe: {e}"))?;
     Ok(parse_probe_output(&String::from_utf8_lossy(&out.stdout)))
 }
 
