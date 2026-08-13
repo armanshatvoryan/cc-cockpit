@@ -34,6 +34,10 @@ pub struct CockpitSettings {
     /// `is_dir` gate in `tmux::default_cwd` degrades it to `$HOME` at use time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_cwd: Option<String>,
+    /// `true` once the first-run wizard has been completed or skipped. Absent
+    /// (older files / fresh installs) ⇒ show the wizard on next launch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub onboarding_done: bool,
 }
 
 /// `<app_config_dir>/cockpit` — the dir holding `settings.json`. Created on save.
@@ -127,6 +131,7 @@ mod tests {
         let s = CockpitSettings {
             schema_version: 1,
             default_cwd: Some("/Users/u/Projects".into()),
+            onboarding_done: false,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: CockpitSettings = serde_json::from_str(&json).unwrap();
@@ -138,6 +143,7 @@ mod tests {
         let s = CockpitSettings {
             schema_version: 1,
             default_cwd: None,
+            onboarding_done: false,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(
@@ -153,6 +159,7 @@ mod tests {
         let s = CockpitSettings {
             schema_version: 1,
             default_cwd: Some("/x".into()),
+            onboarding_done: false,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"schemaVersion\""), "json: {json}");
@@ -196,5 +203,29 @@ mod tests {
         let s: CockpitSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.default_cwd, None);
         assert_eq!(s.schema_version, 0);
+    }
+
+    #[test]
+    fn onboarding_flag_defaults_off_and_round_trips() {
+        // Older file without the key ⇒ false ⇒ wizard shows.
+        let s: CockpitSettings = serde_json::from_str("{}").unwrap();
+        assert!(!s.onboarding_done);
+
+        // false is omitted from disk; true round-trips in camelCase.
+        let off = CockpitSettings {
+            schema_version: 1,
+            default_cwd: None,
+            onboarding_done: false,
+        };
+        assert!(!serde_json::to_string(&off).unwrap().contains("onboardingDone"));
+
+        let on = CockpitSettings {
+            onboarding_done: true,
+            ..off.clone()
+        };
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(json.contains("\"onboardingDone\":true"), "json: {json}");
+        let back: CockpitSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(on, back);
     }
 }

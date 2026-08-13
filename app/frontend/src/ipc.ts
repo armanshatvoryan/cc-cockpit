@@ -556,6 +556,8 @@ export interface CockpitSettings {
   /** Absolute start directory for new tabs. Absent ⇒ built-in fallback chain
    *  (`$HOME/Workflows` → `$HOME`). */
   defaultCwd?: string;
+  /** True once the first-run wizard has been completed or skipped. */
+  onboardingDone?: boolean;
 }
 
 /** Read settings. Never rejects on a missing file — first run returns defaults. */
