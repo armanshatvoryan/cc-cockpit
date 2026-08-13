@@ -949,10 +949,16 @@ export async function decideBoot(): Promise<void> {
   }
 }
 
+/** Re-entrancy latch: a double-click on Finish/Skip must not run the
+ *  persist-and-boot sequence twice — `bootCockpit` is call-once. */
+let finishingOnboarding = false;
+
 /** Finish OR skip (both persist the flag — the wizard must never nag twice),
  *  close the wizard, and in first-run mode start the deferred boot. Re-run
  *  mode (opened from Settings over a running app) never re-boots. */
 export async function finishOnboarding(): Promise<void> {
+  if (finishingOnboarding) return;
+  finishingOnboarding = true;
   try {
     let current: CockpitSettings = { schemaVersion: 1 };
     try {
@@ -967,6 +973,7 @@ export async function finishOnboarding(): Promise<void> {
   }
   setOnboardingOpen(false);
   if (onboardingMode() === "first-run") void bootCockpit();
+  finishingOnboarding = false;
 }
 
 /** Settings → "Show welcome guide": open over the running app. */
