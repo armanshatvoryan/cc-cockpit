@@ -17,6 +17,7 @@ pub mod gitstatus;
 pub mod inventory;
 pub mod layout;
 pub mod manager;
+pub mod onboarding;
 pub mod persist;
 pub mod settings;
 pub mod status;
