@@ -194,13 +194,25 @@ pub fn install_prereq(
 }
 
 /// Kill the whole install process group (zsh + brew/npm + their children).
-/// Best-effort: the reader thread sees EOF and emits `install-done` itself.
-/// `/bin/kill` with a negative pgid avoids a libc dependency.
+/// SIGTERM first; if the group is still alive after a short grace, SIGKILL —
+/// a child that ignores TERM must not outlive the app or wedge the
+/// one-install guard. Best-effort: the reader thread sees EOF and emits
+/// `install-done` itself. `/bin/kill` with a negative pgid avoids a libc
+/// dependency.
 pub fn kill_running_install(guard: &InstallGuard) {
-    if let Some(pgid) = *guard.0.lock().unwrap() {
-        let _ = Command::new("/bin/kill")
-            .args(["-TERM", &format!("-{pgid}")])
-            .status();
+    let pgid = *guard.0.lock().unwrap();
+    let Some(pgid) = pgid else { return };
+    let group = format!("-{pgid}");
+    let _ = Command::new("/bin/kill").args(["-TERM", &group]).status();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // `kill -0` probes liveness without sending a signal.
+    let alive = Command::new("/bin/kill")
+        .args(["-0", &group])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if alive {
+        let _ = Command::new("/bin/kill").args(["-KILL", &group]).status();
     }
 }
 
