@@ -87,7 +87,14 @@ const MemberRow: Component<{ member: TeamMember }> = (props) => {
           <Show when={m.isLead}>
             <span class="tb-tag tb-tag-lead">LEAD</span>
           </Show>
-          <span class="tb-agent">{m.agentType}</span>
+          {/* A2 — "general-purpose" is noise (every generic teammate has it);
+              swap it for the task summary derived from the spin-up prompt
+              when one's available, keeping agentType as the hover title. */}
+          <span class="tb-agent" title={m.agentType}>
+            {m.agentType === "general-purpose" && m.taskSummary
+              ? m.taskSummary
+              : m.agentType}
+          </span>
           <Show when={m.model}>
             <span class="tb-model">{m.model}</span>
           </Show>
