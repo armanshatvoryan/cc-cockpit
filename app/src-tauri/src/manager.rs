@@ -66,6 +66,73 @@ fn compose_screen_replay(capture: &str, cursor: Option<(u32, u32)>) -> String {
     buf
 }
 
+/// Build the mount-time warm-start stream from a FULL-scrollback capture
+/// (`capture-pane -e -S -`) plus the pane's real height and cursor.
+///
+/// The old warm start replayed the whole capture edge-trimmed, with no cursor
+/// and no idea where the viewport started — so the visible grid landed wherever
+/// the write happened to end up (bug #4, warm-start garble). The capture is
+/// ordered history-then-screen, so the split is exact: the LAST `pane_height`
+/// lines ARE the visible grid; everything above is scrollback.
+///
+///   * history → `trim_blank_edges` (drops the fresh-pane padding void) then
+///     `\r\n` join + one terminator so the grid starts on its own row. An
+///     all-blank history contributes nothing.
+///   * grid → `compose_screen_replay` (verbatim rows, H-1 line endings, real
+///     cursor CUP), so the H rows fill the H-row viewport without scrolling it
+///     and the cursor's viewport-relative CUP is correct.
+///
+/// Soft-wrapped history lines still gain a phantom blank row when xterm
+/// re-wraps them — cosmetic, scrollback-only, accepted. The viewport (input
+/// line included) is exact.
+fn compose_warm_start(capture: &str, pane_height: usize, cursor: Option<(u32, u32)>) -> String {
+    let body = capture.strip_suffix('\n').unwrap_or(capture);
+    let lines: Vec<&str> = body.split('\n').collect();
+    let split = lines.len().saturating_sub(pane_height.max(1));
+    let mut out = String::new();
+    if split > 0 {
+        let history = trim_blank_edges(&lines[..split].join("\n"));
+        if !history.is_empty() {
+            out.push_str(&history.replace('\n', "\r\n"));
+            out.push_str("\r\n");
+        }
+    }
+    // The grid slice is handed over in capture-pane's own shape — rows joined
+    // by \n WITH the terminator — because that is what compose_screen_replay
+    // consumes. Re-adding it matters when the last visible row is blank: the
+    // join's trailing \n is then a real separator, not the terminator.
+    let grid = lines[split..].join("\n") + "\n";
+    out.push_str(&compose_screen_replay(&grid, cursor));
+    out
+}
+
+/// Parse the first `n` whitespace-separated u32 fields of a `display-message -p`
+/// reply. Any short / non-numeric / empty reply (older tmux, dead pane) yields
+/// None so the caller can fall back instead of guessing a geometry.
+fn parse_u32_fields(s: &str, n: usize) -> Option<Vec<u32>> {
+    let v: Vec<u32> = s
+        .split_whitespace()
+        .take(n)
+        .map(|f| f.parse::<u32>().ok())
+        .collect::<Option<Vec<u32>>>()?;
+    (v.len() == n).then_some(v)
+}
+
+/// Ask tmux for `n` numeric `#{...}` fields of one pane. Best-effort: a failed
+/// or unparsable query is None, never an error — every caller has a fallback.
+fn pane_numbers(pane_id: &str, format: &str, n: usize) -> Option<Vec<u32>> {
+    tmux::tmux(&["display-message", "-p", "-t", pane_id, format])
+        .ok()
+        .filter(|o| o.ok())
+        .and_then(|o| parse_u32_fields(&o.stdout, n))
+}
+
+/// tmux's real cursor (x, y) for a pane, or None when the query fails (the
+/// replay is still aligned; only the cursor cell is off until the next output).
+fn pane_cursor(pane_id: &str) -> Option<(u32, u32)> {
+    pane_numbers(pane_id, "#{cursor_x} #{cursor_y}", 2).map(|v| (v[0], v[1]))
+}
+
 // ── Snapshot / return DTOs (camelCase for the JS frontend) ───────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -855,6 +922,12 @@ impl SessionManager {
     /// window close+reopen) would otherwise paint blank — this replays whatever
     /// is already on screen. `-S -` includes the whole scrollback history.
     ///
+    /// The capture is split at the pane's real height (`compose_warm_start`) so
+    /// the visible grid is replayed grid-exactly with tmux's cursor, instead of
+    /// landing wherever the scrollback write happened to end (bug #4). If the
+    /// geometry query fails we fall back to the old edge-trimmed whole-capture
+    /// replay — approximate, but never blank.
+    ///
     /// Distinct from `capture_pane` (the poller's plain, bounded capture used for
     /// status classification): warm-start is escape-aware and unbounded.
     pub fn warm_start(&self, pane_id: &str) -> Result<String, String> {
@@ -867,11 +940,16 @@ impl SessionManager {
             "-t",
             pane_id,
         ])?;
-        if out.ok() {
-            Ok(B64.encode(trim_blank_edges(&out.stdout).as_bytes()))
-        } else {
-            Err(out.stderr.trim().to_string())
+        if !out.ok() {
+            return Err(out.stderr.trim().to_string());
         }
+        // One query for both halves of the split: height picks the viewport,
+        // cursor re-asserts the caret inside it.
+        let replay = match pane_numbers(pane_id, "#{pane_height} #{cursor_x} #{cursor_y}", 3) {
+            Some(v) => compose_warm_start(&out.stdout, v[0] as usize, Some((v[1], v[2]))),
+            None => trim_blank_edges(&out.stdout).replace('\n', "\r\n"),
+        };
+        Ok(B64.encode(replay.as_bytes()))
     }
 
     /// Like `warm_start` but the VISIBLE grid ONLY (no `-S -`, no scrollback),
@@ -888,28 +966,8 @@ impl SessionManager {
         if !out.ok() {
             return Err(out.stderr.trim().to_string());
         }
-        // Best-effort cursor: a failed query just skips the CUP (the replay is
-        // still aligned; only the cursor cell is off until the next output).
-        let cursor = tmux::tmux(&[
-            "display-message",
-            "-p",
-            "-t",
-            pane_id,
-            "#{cursor_x} #{cursor_y}",
-        ])
-        .ok()
-        .filter(|o| o.ok())
-        .and_then(|o| {
-            let s = o.stdout.trim().to_string();
-            let mut it = s.split_whitespace();
-            match (
-                it.next().and_then(|v| v.parse::<u32>().ok()),
-                it.next().and_then(|v| v.parse::<u32>().ok()),
-            ) {
-                (Some(x), Some(y)) => Some((x, y)),
-                _ => None,
-            }
-        });
+        // Best-effort cursor: a failed query just skips the CUP.
+        let cursor = pane_cursor(pane_id);
         Ok(B64.encode(compose_screen_replay(&out.stdout, cursor).as_bytes()))
     }
 
@@ -1096,6 +1154,78 @@ mod tests {
         // Two trailing newlines = one real trailing blank row + the separator.
         let out = compose_screen_replay("a\nb\n\n", None);
         assert_eq!(out, "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn compose_warm_start_splits_history_and_grid() {
+        // 5 captured lines, pane_height 3 -> h1,h2 are scrollback history and
+        // g1,g2,g3 are the visible grid. History is joined with \r\n and
+        // terminated so the grid starts on its own row; the grid goes through
+        // compose_screen_replay (no trailing newline) with the real cursor.
+        let capture = "h1\nh2\ng1\ng2\ng3\n";
+        let out = compose_warm_start(capture, 3, Some((2, 2)));
+        assert_eq!(out, "h1\r\nh2\r\ng1\r\ng2\r\ng3\x1b[3;3H");
+    }
+
+    #[test]
+    fn compose_warm_start_short_capture_is_all_grid() {
+        // Fewer captured lines than the pane is tall (fresh pane, no history):
+        // everything is grid, nothing is trimmed, no history terminator.
+        let out = compose_warm_start("a\nb\n", 24, Some((1, 1)));
+        assert_eq!(out, "a\r\nb\x1b[2;2H");
+        // Exactly pane_height lines -> still all grid.
+        let out = compose_warm_start("a\nb\nc\n", 3, None);
+        assert_eq!(out, "a\r\nb\r\nc");
+    }
+
+    #[test]
+    fn compose_warm_start_trims_history_blanks_keeps_grid_blanks() {
+        // History edge blanks are the fresh-pane padding void — trimmed.
+        // Grid blanks are real rows of the viewport — kept verbatim, including
+        // a leading blank row, or every row below shifts up.
+        let capture = "\n\nreal history\n\n\n\ntop\n\nbottom\n";
+        let out = compose_warm_start(capture, 4, None);
+        assert_eq!(out, "real history\r\n\r\ntop\r\n\r\nbottom");
+        // An all-blank history contributes nothing at all (no stray newline).
+        let out = compose_warm_start("\n\n\ngrid\n", 1, None);
+        assert_eq!(out, "grid");
+    }
+
+    #[test]
+    fn compose_warm_start_never_scrolls() {
+        // The grid half must emit exactly H-1 line endings so the H visible
+        // rows fill the H-row viewport without scrolling it (bug #5 again) —
+        // INCLUDING the blank rows below the prompt, which are real viewport
+        // rows. Only the history's edges may be trimmed; treating the whole
+        // capture as one blob (the old warm start) eats those grid blanks and
+        // the prompt lands H-2 rows too low.
+        const H: usize = 24;
+        const GRID_BLANKS: usize = 22; // fresh-ish pane: prompt + padding
+        let mut capture = String::from("h0\nh1\n\n\n\n\n"); // 6 history rows, 4 blank
+        capture.push_str("g0\ng1"); // first 2 of the H grid rows
+        capture.push_str(&"\n".repeat(GRID_BLANKS)); // GRID_BLANKS blank rows
+        capture.push('\n'); // capture-pane's terminator
+        let out = compose_warm_start(&capture, H, None);
+        // 2 kept history rows (1 separator) + 1 terminator + (H-1) grid rows.
+        assert_eq!(out.matches("\r\n").count(), 1 + 1 + H - 1);
+        // History edge blanks gone; grid blanks all present, in order.
+        assert_eq!(
+            out,
+            format!("h0\r\nh1\r\ng0\r\ng1{}", "\r\n".repeat(GRID_BLANKS))
+        );
+    }
+
+    #[test]
+    fn parse_u32_fields_needs_every_field() {
+        assert_eq!(parse_u32_fields("3 7\n", 2), Some(vec![3, 7]));
+        assert_eq!(parse_u32_fields(" 24 0 12 \n", 3), Some(vec![24, 0, 12]));
+        // Short, non-numeric, or empty replies (older tmux, dead pane) -> None,
+        // so the caller falls back instead of guessing.
+        assert_eq!(parse_u32_fields("3", 2), None);
+        assert_eq!(parse_u32_fields("", 1), None);
+        assert_eq!(parse_u32_fields("x y", 2), None);
+        // Extra trailing fields are ignored, not an error.
+        assert_eq!(parse_u32_fields("1 2 3", 2), Some(vec![1, 2]));
     }
 
     #[test]

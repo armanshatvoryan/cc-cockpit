@@ -139,12 +139,17 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     // the capture is visible-grid-only (the old full-scrollback replay was
     // root cause #6). Cost: the clear (2J/3J) drops this pane's local
     // scrollback on an actual resize — accepted (owner ruling 2026-08-12).
+    let disposed = false;
     const RESYNC_DEBOUNCE_MS = 300; // drag storms collapse into one resync
     const RESYNC_QUIET_MS = 250; // pane output must be quiet this long
     const RESYNC_MAX_WAIT_MS = 2000; // streaming panes: resync anyway
     let lastOutputAt = 0;
     let resyncTimer: number | undefined;
+    // Bumped per scheduled resync so an in-flight warm start can tell its
+    // capture went stale (see maybeWarmStart).
+    let resyncGen = 0;
     const scheduleResync = () => {
+      resyncGen++;
       if (resyncTimer) clearTimeout(resyncTimer);
       const startedAt = Date.now();
       const attempt = (retriesLeft: number) => {
@@ -183,25 +188,70 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       resyncTimer = window.setTimeout(() => attempt(1), RESYNC_DEBOUNCE_MS);
     };
 
+    // ── Warm start, gated on the first applied rect (bug #4) ──────────────
+    //
+    // The backend now composes the mount replay grid-exactly: the last
+    // `pane_height` captured lines are the visible grid, replayed verbatim
+    // with tmux's cursor. That only lands right if THIS terminal is already
+    // the pane's size — replaying an 80x40 grid into xterm's default 80x24
+    // buffer wraps every over-wide row and the viewport ends up garbled, with
+    // no resize afterwards to repair it (the first rect IS the mount rect, so
+    // the rectApplied gate below never schedules a resync for it — and we do
+    // not force one either: every resync costs this pane's local scrollback,
+    // and it is redundant once the mount replay is exact).
+    //
+    // So warm start waits for BOTH: the `pane:data` listener registered (no
+    // live output may be lost) and the terminal sized (buffer is pane-sized).
+    // Whichever lands second fires it; it fires exactly once.
+    let listenerReady = false;
+    let sizeSettled = false;
+    let warmStarted = false;
+    const maybeWarmStart = () => {
+      if (disposed || warmStarted || !listenerReady || !sizeSettled) return;
+      warmStarted = true;
+      // A resize can land while the capture RPC is in flight; the resync it
+      // schedules paints a fresher grid at the NEW size, so this reply is
+      // stale — writing it would repaint the old geometry over the new one.
+      const gen = resyncGen;
+      warmStart(paneId)
+        .then((w) => {
+          if (disposed || gen !== resyncGen || !w.bytesB64) return;
+          term.write(b64ToBytes(w.bytesB64));
+        })
+        .catch(() => {});
+    };
+    // Safety net: a pane whose tmux geometry never parses gets no rect at all
+    // (PaneGrid falls back to a CSS grid and passes rect=undefined). Waiting
+    // forever would leave it permanently BLANK, which is worse than an
+    // unsized replay — so after a grace period we warm start anyway.
+    const WARM_START_RECT_WAIT_MS = 1500;
+    const rectWaitTimer = window.setTimeout(() => {
+      sizeSettled = true; // "no rect is coming" — unblock the gate
+      maybeWarmStart();
+    }, WARM_START_RECT_WAIT_MS);
+
     // Mirror the tmux pane's size exactly. Runs on mount (rect is usually
     // already known from the boot list_state) and on every layout change.
     // Hidden tabs resize too — no layout box needed, unlike the old fit().
-    // Any size change AFTER the first applied rect schedules the resync
-    // above: the first sizing is mount (warm_start replays content for it),
-    // every later one is a live tmux resize this buffer just diverged from.
-    let sizedOnce = false;
+    let rectApplied = false;
     createEffect(() => {
       const r = props.rect;
       if (!r || !(r.w > 0) || !(r.h > 0)) return;
       const changed = term.cols !== r.w || term.rows !== r.h;
       if (changed) term.resize(r.w, r.h);
-      if (changed && sizedOnce) scheduleResync();
-      sizedOnce = true;
+      // Only a size change AFTER the mount rect is a live tmux resize this
+      // buffer diverged from; the mount rect is repaired by warm start below.
+      // Exception: if the safety net already warm-started us into an unsized
+      // buffer, the FIRST rect is a divergence too and must be resynced.
+      if (changed && (rectApplied || warmStarted)) scheduleResync();
+      rectApplied = true;
+      clearTimeout(rectWaitTimer);
+      sizeSettled = true;
+      maybeWarmStart();
     });
 
     // Output: write decoded bytes verbatim (xterm is a full VT emulator).
     let unlistenData: UnlistenFn | undefined;
-    let disposed = false;
     onPaneData((p: PaneDataPayload) => {
       if (p.paneId !== paneId) return;
       lastOutputAt = Date.now(); // resync quiescence gate reads this
@@ -212,18 +262,14 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
         return;
       }
       unlistenData = u;
-      // Warm start: only AFTER the live `pane:data` listener is registered do we
-      // replay the existing screen + scrollback. The control client streams only
-      // `%output` produced after it attached, so a re-attached pane would paint
-      // blank without this. Ordering matters: the listener is live first, so any
-      // live output during the fetch isn't lost — a little duplicated tail is
-      // harmless, a fully blank pane is not. Fire once; guard the unmount race.
-      warmStart(paneId)
-        .then((w) => {
-          if (disposed || !w.bytesB64) return;
-          term.write(b64ToBytes(w.bytesB64));
-        })
-        .catch(() => {});
+      // Warm start: only AFTER the live `pane:data` listener is registered may
+      // we replay the existing screen + scrollback. The control client streams
+      // only `%output` produced after it attached, so a re-attached pane would
+      // paint blank without this. Ordering matters: the listener is live first,
+      // so any live output during the fetch isn't lost — a little duplicated
+      // tail is harmless, a fully blank pane is not.
+      listenerReady = true;
+      maybeWarmStart();
     });
 
     // Input: onData yields already-encoded VT (arrows/ctrl/paste) — send literal.
@@ -281,6 +327,7 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       disposed = true;
       if (resyncTimer) clearTimeout(resyncTimer);
       if (resizeTimer) clearTimeout(resizeTimer);
+      clearTimeout(rectWaitTimer);
       if (measureTimer) clearInterval(measureTimer);
       ro.disconnect();
       dataSub.dispose();
