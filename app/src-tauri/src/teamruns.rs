@@ -50,6 +50,15 @@ pub struct TeamMember {
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Raw native `prompt` (the task the teammate was spun up with), if any.
+    /// Trimmed; an empty/whitespace-only prompt is treated as absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Derived display summary of `prompt` (first sentence of the first line,
+    /// trimmed to ~80 chars) — the pane-label fallback for a generic
+    /// `agentType` like `general-purpose`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_summary: Option<String>,
     /// Native `isActive` flag (the lead is implicitly active).
     pub is_active: bool,
     /// True for the member whose `agentId == leadAgentId`.
@@ -191,6 +200,17 @@ fn read_member(m: &Value, lead_agent_id: &str) -> TeamMember {
         other => other,
     }
     .to_string();
+    // Trim, and drop an empty/whitespace-only prompt to `None` — treat it the
+    // same as a missing field (schema-drift safe, no blank tooltips).
+    let prompt = s("prompt").and_then(|p| {
+        let t = p.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    let task_summary = prompt.as_deref().and_then(derive_task_summary);
     TeamMember {
         is_lead: !agent_id.is_empty() && agent_id == lead_agent_id,
         is_active: m
@@ -206,8 +226,42 @@ fn read_member(m: &Value, lead_agent_id: &str) -> TeamMember {
         model: s("model"),
         cwd: s("cwd"),
         color: s("color"),
+        prompt,
+        task_summary,
         agent_id,
     }
+}
+
+/// Max chars of a derived `task_summary` (a `…` is appended when the source
+/// text is cut, so a full result is at most this many chars).
+const SUMMARY_MAX_CHARS: usize = 80;
+
+/// Derive a short pane-label summary from a raw teammate `prompt`: the first
+/// sentence of the first line (a `.`/`!`/`?` not at position 0, so it doesn't
+/// cut on an "e.g." abbreviation at the very start), else the whole first
+/// line — either way trimmed to `SUMMARY_MAX_CHARS`. `None` only if the first
+/// line is itself empty (the caller already filters blank prompts, but this
+/// stays defensive for a prompt that's all newlines).
+fn derive_task_summary(prompt: &str) -> Option<String> {
+    let first_line = prompt.split('\n').next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        return None;
+    }
+    let candidate = match first_line.find(['.', '!', '?']) {
+        Some(i) if i > 0 => first_line[..=i].trim(),
+        _ => first_line,
+    };
+    Some(truncate_chars(candidate, SUMMARY_MAX_CHARS))
+}
+
+/// Truncate to at most `max` chars (UTF-8 safe, via `chars()`), appending `…`
+/// in place of the last char when a cut happens.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", truncated.trim_end())
 }
 
 /// Sum of message-array lengths across `inboxes/*.json`. A bad/empty inbox file
@@ -520,6 +574,93 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── read_member: prompt / task_summary parsing ──────────────────────────
+
+    fn member_with_prompt(prompt: Value) -> Value {
+        serde_json::json!({
+            "agentId": "worker@session-x",
+            "name": "worker",
+            "agentType": "general-purpose",
+            "backendType": "tmux",
+            "tmuxPaneId": "%1",
+            "prompt": prompt,
+        })
+    }
+
+    #[test]
+    fn task_summary_takes_first_sentence_of_first_line() {
+        let m = member_with_prompt(serde_json::json!(
+            "Fix the OAuth timeout bug in the login flow. Also check the refresh path.\n\nMore context below."
+        ));
+        let tm = read_member(&m, "lead@session-x");
+        assert_eq!(
+            tm.prompt.as_deref(),
+            Some("Fix the OAuth timeout bug in the login flow. Also check the refresh path.\n\nMore context below.")
+        );
+        assert_eq!(
+            tm.task_summary.as_deref(),
+            Some("Fix the OAuth timeout bug in the login flow.")
+        );
+    }
+
+    #[test]
+    fn task_summary_and_prompt_absent_when_prompt_field_missing() {
+        let m = serde_json::json!({
+            "agentId": "worker@session-x", "name": "worker",
+            "agentType": "general-purpose", "backendType": "tmux", "tmuxPaneId": "%1",
+        });
+        let tm = read_member(&m, "lead@session-x");
+        assert!(tm.prompt.is_none());
+        assert!(tm.task_summary.is_none());
+    }
+
+    #[test]
+    fn task_summary_and_prompt_absent_when_prompt_is_not_a_string() {
+        // Schema drift: a malformed/mistyped `prompt` (e.g. native ships a
+        // number or object) must degrade to None, never panic.
+        let m = member_with_prompt(serde_json::json!(12345));
+        let tm = read_member(&m, "lead@session-x");
+        assert!(tm.prompt.is_none());
+        assert!(tm.task_summary.is_none());
+
+        let m_obj = member_with_prompt(serde_json::json!({"nested": "value"}));
+        let tm_obj = read_member(&m_obj, "lead@session-x");
+        assert!(tm_obj.prompt.is_none());
+        assert!(tm_obj.task_summary.is_none());
+    }
+
+    #[test]
+    fn task_summary_and_prompt_absent_for_blank_prompt() {
+        let m = member_with_prompt(serde_json::json!("   \n\t  "));
+        let tm = read_member(&m, "lead@session-x");
+        assert!(tm.prompt.is_none());
+        assert!(tm.task_summary.is_none());
+    }
+
+    #[test]
+    fn task_summary_truncates_long_terminator_less_first_line() {
+        let long = "a".repeat(120);
+        let m = member_with_prompt(serde_json::json!(long));
+        let tm = read_member(&m, "lead@session-x");
+        let summary = tm.task_summary.expect("summary present");
+        assert_eq!(summary.chars().count(), 80);
+        assert_eq!(summary.chars().last(), Some('…'));
+        assert_eq!(
+            summary.chars().take(79).collect::<String>(),
+            "a".repeat(79)
+        );
+    }
+
+    #[test]
+    fn task_summary_leading_punctuation_does_not_cut_at_position_zero() {
+        // A first line that STARTS with a sentence-ending char (e.g. "! ...")
+        // must not cut to a 1-char summary — the `i > 0` guard falls back to
+        // the whole first line instead.
+        let m = member_with_prompt(serde_json::json!("! urgent: fix prod outage now"));
+        let tm = read_member(&m, "lead@session-x");
+        assert_eq!(tm.task_summary.as_deref(), Some("! urgent: fix prod outage now"));
     }
 
     #[test]

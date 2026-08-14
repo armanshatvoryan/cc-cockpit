@@ -6,8 +6,14 @@
 
 import { createSignal, Show, type Component } from "solid-js";
 import type { LayoutRect, PaneInfo } from "../ipc";
-import { interruptPane } from "../ipc";
-import { focusPane, doClosePane, activePanes, sendPaneToNewTab } from "../store";
+import { interruptPane, launchCc } from "../ipc";
+import {
+  focusPane,
+  doClosePane,
+  activePanes,
+  sendPaneToNewTab,
+  paneLabel,
+} from "../store";
 import { StatusBadge } from "./StatusBadge";
 import { LaunchDialog } from "./LaunchDialog";
 import { XtermHost } from "../XtermHost";
@@ -25,6 +31,8 @@ export const Pane: Component<{
   const canLaunch = () =>
     !props.pane.dead &&
     (props.pane.status === "IDLE" || props.pane.status === "UNKNOWN");
+  // A2 — team-board member name (falls back to pane title / id) + tooltip.
+  const label = () => paneLabel(props.pane);
 
   return (
     <div
@@ -34,8 +42,8 @@ export const Pane: Component<{
     >
       <div class="pane-toolbar">
         <StatusBadge status={props.pane.status} />
-        <span class="pane-title" title={props.pane.cwd}>
-          {props.pane.title || props.pane.paneId}
+        <span class="pane-title" title={label().tooltip}>
+          {label().text}
         </span>
         <span class="pane-id">{props.pane.paneId}</span>
         <span class="toolbar-spacer" />
@@ -43,13 +51,27 @@ export const Pane: Component<{
         <Show when={canLaunch()}>
           <button
             class="tb-btn"
-            title="Launch Claude / shell"
+            title="Launch Claude here (⌥-click for options)"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (e.altKey) {
+                setShowLaunch(true);
+                return;
+              }
+              void launchCc(props.pane.paneId, props.pane.cwd).catch(() => {});
+            }}
+          >
+            Launch CC
+          </button>
+          <button
+            class="tb-btn tb-caret"
+            title="Launch options (model / flags / shell)"
             onClick={(e) => {
               e.stopPropagation();
               setShowLaunch(true);
             }}
           >
-            Launch CC
+            ⌄
           </button>
         </Show>
 

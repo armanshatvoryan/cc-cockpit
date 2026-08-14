@@ -580,6 +580,16 @@ button {
   border-color: var(--danger);
   color: var(--on-accent);
 }
+/* A1 — narrow caret next to "Launch CC" that opens the model/flags dialog
+   (⌥-click on the main button does the same). */
+.tb-caret {
+  width: 15px;
+  padding: 0;
+  margin-left: -4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .pane-body {
   flex: 1 1 auto;
