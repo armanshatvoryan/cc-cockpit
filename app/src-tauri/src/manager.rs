@@ -376,6 +376,33 @@ fn parse_window_id_index(reply: &str) -> Result<(String, u32), String> {
     Ok((win.to_string(), index))
 }
 
+/// How `store_pane` must reshape tmux for a pane whose window holds `siblings`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreShape {
+    /// >1 pane in the window: break JUST this pane out into its own window.
+    BreakOut,
+    /// The pane is the whole tab: rename the window in place.
+    RenameWindow,
+}
+
+/// Decide the store shape from the pane's OWN window's pane list.
+///
+/// An EMPTY list is an error, never "sole pane". `panes_in_pane_window` drops
+/// every line that isn't a valid `%<n>` — so a C-locale/mangled `list-panes`
+/// reply (the same failure class `parse_window_id_index` guards) yields zero
+/// panes for a window that really has three. Treating that as sole-pane would
+/// rename the WHOLE window: the user stores one pane of a 3-pane tab and all
+/// three get swallowed into a hidden `_sb:` session with `pane_ids: []`. Fail
+/// loudly instead — a store that didn't happen is recoverable, a silently
+/// hidden tab is not.
+pub fn store_shape(siblings: &[String]) -> Result<StoreShape, String> {
+    match siblings.len() {
+        0 => Err("tmux returned no usable panes for that window".to_string()),
+        1 => Ok(StoreShape::RenameWindow),
+        _ => Ok(StoreShape::BreakOut),
+    }
+}
+
 /// The first window that may be ADOPTED as a tab — i.e. the first NON-stored
 /// one. A re-healed session's window list can start with a rediscovered stored
 /// window (they outlive restarts); adopting that would both hand the user a
@@ -845,7 +872,7 @@ impl SessionManager {
         let name = format!("{STORED_PREFIX}{label}");
 
         let siblings = self.panes_in_pane_window(pane_id)?;
-        if siblings.len() > 1 {
+        if store_shape(&siblings)? == StoreShape::BreakOut {
             let out = tmux::tmux_ok(&[
                 "break-pane",
                 "-d",
@@ -1625,6 +1652,28 @@ mod tests {
         // All-stored: nothing to adopt (caller creates a fresh window instead).
         assert!(pick_adoptable_tab(vec![tab("@1", 1, "_sb:x", &["%2"])]).is_none());
         assert!(pick_adoptable_tab(vec![]).is_none());
+    }
+
+    #[test]
+    fn store_shape_rejects_an_empty_pane_list() {
+        // The bug: `siblings.len() > 1` sent a ZERO-length list (every line
+        // dropped by the `is_pane_id` filter — the C-locale mangling class) down
+        // the sole-pane branch, which renames the pane's WHOLE window. Storing
+        // one pane of a 3-pane tab would swallow all three into a hidden `_sb:`
+        // session with `pane_ids: []`. Empty must be a loud error.
+        assert!(store_shape(&[]).is_err());
+        assert_eq!(
+            store_shape(&["%1".to_string()]),
+            Ok(StoreShape::RenameWindow)
+        );
+        assert_eq!(
+            store_shape(&["%1".to_string(), "%2".to_string()]),
+            Ok(StoreShape::BreakOut)
+        );
+        assert_eq!(
+            store_shape(&["%1".into(), "%2".into(), "%3".into()]),
+            Ok(StoreShape::BreakOut)
+        );
     }
 
     #[test]
