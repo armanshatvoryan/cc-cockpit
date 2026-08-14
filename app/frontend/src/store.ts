@@ -349,11 +349,20 @@ export async function bootCockpit(): Promise<void> {
   // opening the board. Separate timer/delay from the state reconcile above —
   // this is a "nice to have eventually", not on the topology critical path.
   let teamTopoTimer: number | undefined;
-  const unTopo = await onPaneTopology(() => {
+  const unTopo = await onPaneTopology((p) => {
     if (topoTimer) clearTimeout(topoTimer);
     topoTimer = window.setTimeout(() => void refreshState(), 120);
+    // Only a STRUCTURAL change can bring a new teammate pane into existence.
+    // `activePaneChanged` fires on every focus click and `paneModeChanged` on
+    // copy-mode toggles — sweeping ~/.claude/teams off those is pure waste.
+    if (p.kind !== "layoutChange" && p.kind !== "windowAdd") return;
     if (teamTopoTimer) clearTimeout(teamTopoTimer);
-    teamTopoTimer = window.setTimeout(() => void loadTeamRunsNow(), 400);
+    // QUIET: this reload is speculative, so it must never flip the board into
+    // its "loading…" fallback — an open board would blank on every new pane.
+    teamTopoTimer = window.setTimeout(
+      () => void loadTeamRunsNow({ quiet: true }),
+      400,
+    );
   });
 
   // cockpit:reconnected — backend re-healed a vanished server. Reload state, then
@@ -931,18 +940,28 @@ const [teamBoard, setTeamBoard] = createStore<TeamBoardStore>({
 const [teamBoardOpen, setTeamBoardOpen] = createSignal(false);
 export { teamBoard, teamBoardOpen };
 
-/** Reload the live team runs from native session files. */
-export async function loadTeamRunsNow(): Promise<void> {
-  setTeamBoard("loading", true);
-  setTeamBoard("error", null);
+/** Reload the live team runs from native session files.
+ *
+ *  `quiet` = a speculative background refresh (topology-triggered): it never
+ *  touches `loading`/`error`, so an open board keeps showing its current rows
+ *  instead of flickering through "loading…", and a transient read failure does
+ *  not wipe them. User-initiated reloads (open, ↻, cleanup) stay loud. */
+export async function loadTeamRunsNow(opts?: { quiet?: boolean }): Promise<void> {
+  const quiet = opts?.quiet === true;
+  if (!quiet) {
+    setTeamBoard("loading", true);
+    setTeamBoard("error", null);
+  }
   try {
     const runs = await loadTeamRuns();
     setTeamBoard("runs", runs);
   } catch (e) {
-    setTeamBoard("error", String(e));
-    setTeamBoard("runs", []);
+    if (!quiet) {
+      setTeamBoard("error", String(e));
+      setTeamBoard("runs", []);
+    }
   } finally {
-    setTeamBoard("loading", false);
+    if (!quiet) setTeamBoard("loading", false);
   }
 }
 
@@ -1301,13 +1320,37 @@ export function cancelToggle(): void {
 
 const NAME_OK = /^[A-Za-z0-9._-]+$/;
 
+/** True when the pane's foreground command is claude — i.e. typing into it
+ *  would land in a live agent's prompt, not a shell. Fails CLOSED (treats an
+ *  unreadable pane as "running claude") so a lost query can never cause a
+ *  stray launch line to be typed into an agent. */
+async function paneRunsClaude(paneId: string): Promise<boolean> {
+  try {
+    return (await paneCommand(paneId)).toLowerCase().includes("claude");
+  } catch {
+    return true;
+  }
+}
+
 /** A1 — the pane toolbar's zero-friction "Launch CC" path: launch straight
  *  into an existing pane (no dialog). Surfaces a failure the same way every
  *  other launch path here does — `setStore("error", ...)` — so a bad cwd or
  *  backend error is visible, not indistinguishable from success. */
 export async function directLaunchCc(paneId: string, cwd: string): Promise<void> {
+  // An IDLE pane can be an idle CLAUDE SESSION, not a fresh shell — launching
+  // there would type `cd … && claude` + CR straight into the agent's prompt.
+  if (await paneRunsClaude(paneId)) {
+    setStore(
+      "error",
+      `pane ${paneId} is already running claude — use ⌥-click / ⌄ for launch options`,
+    );
+    return;
+  }
+  // An empty cwd would emit `cd '' && … claude`: zsh errors on the cd and the
+  // `&&` swallows the launch, while run_line_in_pane still reports Ok.
+  const dir = cwd.trim() || "~";
   try {
-    await launchCc(paneId, cwd);
+    await launchCc(paneId, dir);
   } catch (e) {
     setStore("error", `launch failed: ${String(e)}`);
   }
