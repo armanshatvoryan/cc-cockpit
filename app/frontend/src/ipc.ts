@@ -274,6 +274,42 @@ export interface FileEntry {
   isDir: boolean;
 }
 
+// ── Usage (C-2) — local jsonl token-burn footer ─────────────────────────────
+// Mirrors `usage.rs` camelCase serde DTOs 1:1 (see task-C1-report.md §1 — the
+// authoritative wire contract). `usage_snapshot` / `usage:update` never send
+// snake_case; Tauri's JSON bridge passes these straight through unconverted.
+
+export interface ModelUsage {
+  /** Raw model id, e.g. `claude-opus-5`. */
+  model: string;
+  totalTokens: number;
+  messages: number;
+}
+
+export interface UsageWindow {
+  /** `input + output + cacheCreation + cacheRead`. */
+  totalTokens: number;
+  outputTokens: number;
+  /** Non-cached input only. */
+  inputTokens: number;
+  /** `cacheCreation + cacheRead`. */
+  cacheTokens: number;
+  messages: number;
+  /** Sorted totalTokens desc, ties by model name asc. */
+  byModel: ModelUsage[];
+  /** Trailing-30-min velocity. Byte-identical on `fiveHour` and `week` (it's a
+   *  whole-scan "how hot right now" readout, not a per-window average) — render
+   *  it ONCE, not per window. */
+  tokensPerMin: number;
+}
+
+export interface UsageSnapshot {
+  fiveHour: UsageWindow;
+  week: UsageWindow;
+  computedAtMs: number;
+  scanMs: number;
+}
+
 // ── Event payloads ──────────────────────────────────────────────────────────
 
 export interface PaneDataPayload {
@@ -646,6 +682,15 @@ export function breakPane(paneId: string): Promise<string> {
   return invoke<string>("break_pane", { paneId });
 }
 
+/**
+ * Last published usage snapshot (C-2). `null` until the first background scan
+ * pass finishes — render `—`, not `0`. Pull-on-boot only: this command never
+ * scans itself, it just hands back whatever the poller last computed.
+ */
+export function usageSnapshot(): Promise<UsageSnapshot | null> {
+  return invoke<UsageSnapshot | null>("usage_snapshot");
+}
+
 // ── Events (Rust -> FE) ───────────────────────────────────────────────────────
 
 export function onPaneData(handler: (p: PaneDataPayload) => void): Promise<UnlistenFn> {
@@ -701,4 +746,12 @@ export function onFileTreeChanged(
   handler: (p: FileChangePayload) => void,
 ): Promise<UnlistenFn> {
   return listen<FileChangePayload>("filetree:changed", (e) => handler(e.payload));
+}
+
+/** A usage scan pass finished (immediate on boot, then every 45s). Payload is
+ *  the full fresh `UsageSnapshot` — replace, don't merge. */
+export function onUsageUpdate(
+  handler: (p: UsageSnapshot) => void,
+): Promise<UnlistenFn> {
+  return listen<UsageSnapshot>("usage:update", (e) => handler(e.payload));
 }
