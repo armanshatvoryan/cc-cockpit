@@ -7,8 +7,10 @@
 // row's badge is the WORST status across the window (a parked agent that starts
 // waiting on you goes red here without a tab existing for it).
 //
-// Interactions: row click (or ↩) restores the session as a tab; × kills it, with
-// the same live-pane confirmation the tab close uses. ⌘⇧B toggles.
+// Interactions: clicking the row (or ↩) restores the session as a tab; × kills
+// it, with the same live-pane confirmation the tab close uses. ⌘⇧B toggles. Each
+// of the three is a real <button>, so Tab/Enter/Space work natively — see the
+// note on the row markup below.
 //
 // The kill confirmation lives on the PANEL, not on the row: `store.stored` is
 // replaced wholesale on every reconcile (the rows carry no terminal identity, so
@@ -41,8 +43,9 @@ const SessionRow: Component<{
 }> = (props) => {
   const restore = () => void restoreStoredSession(props.session.windowId);
 
-  async function onKill(e: MouseEvent) {
-    e.stopPropagation();
+  // No stopPropagation needed: the actions are siblings of the row button now,
+  // so a click here never reaches a restore handler.
+  async function onKill() {
     const res = await killStoredSession(props.session.windowId, false);
     if (res.needsConfirm) {
       props.onNeedsConfirm({
@@ -53,31 +56,23 @@ const SessionRow: Component<{
     }
   }
 
+  // The row body is a REAL <button>, with the actions as SIBLINGS rather than
+  // children. A `role="button"` div wrapping real buttons is invalid for
+  // assistive tech, and an ancestor keydown handler would swallow Enter/Space
+  // aimed at the action buttons — restoring the session instead of killing it.
+  // Three plain buttons side by side need no synthetic keyboard handling at all.
   return (
-    <div
-      class="sb-row"
-      role="button"
-      tabindex={0}
-      title={storedTooltip(props.session)}
-      onClick={restore}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          restore();
-        }
-      }}
-    >
-      <StatusBadge status={storedStatus(props.session)} />
-      <span class="sb-label">{props.session.label}</span>
+    <div class="sb-row">
+      <button
+        class="sb-open"
+        title={storedTooltip(props.session)}
+        onClick={restore}
+      >
+        <StatusBadge status={storedStatus(props.session)} />
+        <span class="sb-label">{props.session.label}</span>
+      </button>
       <span class="sb-actions">
-        <button
-          class="sb-act"
-          title="Restore as a tab"
-          onClick={(e) => {
-            e.stopPropagation();
-            restore();
-          }}
-        >
+        <button class="sb-act" title="Restore as a tab" onClick={restore}>
           ↩
         </button>
         <button class="sb-act sb-act-danger" title="Kill session" onClick={onKill}>

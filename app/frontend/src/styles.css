@@ -2235,19 +2235,39 @@ button {
   color: var(--fg-faint);
 }
 
+/* A row is three SIBLING buttons: the body (restore) plus the two actions. The
+   body is a real <button> rather than a role="button" wrapper, so the actions
+   are not nested inside it and each keeps native keyboard behaviour. */
 .sb-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 6px 5px 10px;
-  cursor: pointer;
+  padding-right: 6px;
   border-left: 2px solid transparent;
 }
 .sb-row:hover,
-.sb-row:focus-visible {
+.sb-row:focus-within {
   background: var(--bg-hover);
   border-left-color: var(--focus);
-  outline: none;
+}
+
+.sb-open {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 4px 5px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+.sb-open:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
 }
 /* The row badge is a worst-of summary, so it stays compact — the dot carries the
    state, the word next to it would crowd out the label. */
@@ -2273,8 +2293,7 @@ button {
   opacity: 0;
 }
 .sb-row:hover .sb-actions,
-.sb-row:focus-visible .sb-actions,
-.sb-actions:focus-within {
+.sb-row:focus-within .sb-actions {
   opacity: 1;
 }
 .sb-act {
