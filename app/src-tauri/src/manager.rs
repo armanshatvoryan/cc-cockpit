@@ -46,12 +46,20 @@ fn trim_blank_edges(s: &str) -> String {
 ///
 /// capture-pane joins rows with bare `\n`; xterm is not in convertEol mode, so
 /// rows are rejoined with `\r\n` (a bare LF keeps the column and stairsteps).
-/// The capture is NOT edge-trimmed: after a `term.reset()` every visible row —
-/// blank ones included — must land on its own grid row or everything below
-/// shifts. `cursor` is tmux's real (x, y) for the pane, re-asserted with a
-/// 1-based CUP so the next differential frame starts from the right cell.
+/// The capture is NOT edge-trimmed: after a clear every visible row — blank
+/// ones included — must land on its own grid row or everything below shifts.
+/// `cursor` is tmux's real (x, y) for the pane, re-asserted with a 1-based CUP
+/// so the next differential frame starts from the right cell.
+///
+/// Bug #5 (the void): `capture-pane -p` terminates its LAST row with `\n` too,
+/// so an R-row grid arrives as R rows + R line separators. Replaying all R
+/// separators into an R-row viewport scrolls it one row — the top row is pushed
+/// into scrollback (a phantom history line) and the bottom row is left blank
+/// (the void). Exactly ONE trailing `\n` is stripped: it is a terminator, not a
+/// row. A genuine trailing blank ROW arrives as `\n\n` and survives.
 fn compose_screen_replay(capture: &str, cursor: Option<(u32, u32)>) -> String {
-    let mut buf = capture.replace('\n', "\r\n");
+    let grid = capture.strip_suffix('\n').unwrap_or(capture);
+    let mut buf = grid.replace('\n', "\r\n");
     if let Some((x, y)) = cursor {
         buf.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
     }
@@ -1047,21 +1055,47 @@ mod tests {
     fn compose_screen_replay_converts_lf_and_restores_cursor() {
         // capture-pane joins rows with bare \n; xterm has no convertEol, so a
         // bare LF would stairstep (next row starts at the previous row's end
-        // column). Rows must be rejoined with \r\n. The cursor lands wherever
-        // the write ends, so tmux's real cursor position is re-asserted with a
-        // 1-based CUP.
+        // column). Rows must be rejoined with \r\n. capture-pane's own trailing
+        // \n is NOT a row separator — it is dropped (bug #5, the void). The
+        // cursor lands wherever the write ends, so tmux's real cursor position
+        // is re-asserted with a 1-based CUP.
         let out = compose_screen_replay("a\nb\n", Some((3, 1)));
-        assert_eq!(out, "a\r\nb\r\n\x1b[2;4H");
+        assert_eq!(out, "a\r\nb\x1b[2;4H");
     }
 
     #[test]
     fn compose_screen_replay_keeps_leading_blank_rows() {
-        // The visible grid is replayed VERBATIM after a term.reset(): a blank
-        // top row is a real grid row (e.g. a TUI's margin) — trimming it would
-        // shift every subsequent row up and misalign the next differential
-        // frame. (trim_blank_edges is for the scrollback warm_start only.)
+        // The visible grid is replayed VERBATIM after a clear: a blank top row
+        // is a real grid row (e.g. a TUI's margin) — trimming it would shift
+        // every subsequent row up and misalign the next differential frame.
+        // (trim_blank_edges is for the scrollback warm_start only.)
         let out = compose_screen_replay("\n\nprompt %\n", None);
-        assert_eq!(out, "\r\n\r\nprompt %\r\n");
+        assert_eq!(out, "\r\n\r\nprompt %");
+    }
+
+    #[test]
+    fn compose_screen_replay_never_scrolls_full_grid() {
+        // Bug #5 (the void): a full-height grid replayed with R line endings
+        // scrolls the xterm one row — the top row leaves for scrollback and the
+        // bottom row is blank. R rows must produce exactly R-1 line endings.
+        const R: usize = 24;
+        let capture = (0..R).map(|i| format!("row{i}")).collect::<Vec<_>>().join("\n") + "\n";
+        let out = compose_screen_replay(&capture, None);
+        assert_eq!(out.matches("\r\n").count(), R - 1);
+        assert!(!out.ends_with('\n'));
+        assert!(out.starts_with("row0\r\n"));
+        assert!(out.ends_with("row23"));
+    }
+
+    #[test]
+    fn compose_screen_replay_without_trailing_newline_is_unchanged() {
+        // Only ONE trailing \n is stripped, and only if present: a capture that
+        // already ends on its last row keeps every row.
+        let out = compose_screen_replay("a\nb", Some((0, 0)));
+        assert_eq!(out, "a\r\nb\x1b[1;1H");
+        // Two trailing newlines = one real trailing blank row + the separator.
+        let out = compose_screen_replay("a\nb\n\n", None);
+        assert_eq!(out, "a\r\nb\r\n");
     }
 
     #[test]
