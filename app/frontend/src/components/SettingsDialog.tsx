@@ -23,6 +23,7 @@ import {
   setDefaultCwd,
   closeSettings,
   setSettingsError,
+  openOnboardingRerun,
 } from "../store";
 import { theme, setTheme, type ThemeName } from "../theme";
 
@@ -133,6 +134,26 @@ export const SettingsDialog: Component = () => {
                 : `New tabs open in ${settings.effectiveCwd}`}
             </div>
           </Show>
+        </div>
+
+        <div class="field">
+          <span class="field-label">Welcome guide</span>
+          <div class="settings-row">
+            <span class="field-hint">
+              Re-run the first-launch setup: environment check, folder,
+              shortcuts.
+            </span>
+            <button
+              type="button"
+              class="btn"
+              onClick={() => {
+                closeSettings();
+                openOnboardingRerun();
+              }}
+            >
+              Show welcome guide
+            </button>
+          </div>
         </div>
 
         <Show when={settings.error}>
