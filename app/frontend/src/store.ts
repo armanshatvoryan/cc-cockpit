@@ -522,6 +522,12 @@ const GRID_ERROR_MAX_PUSHES = 3;
 const GRID_ERROR_WINDOW_MS = 5000;
 let gridErrorPushes = 0;
 let gridErrorWindowStartedAt = 0;
+// Bumped every time a rejection clears the key guard. A `pushGrid` that was
+// already awaiting `setGrid` when that happened must NOT re-record its key on
+// resolve — the key it holds describes the geometry tmux just rejected, and
+// recording it would make the repair push short-circuit on the change-guard
+// (silently discarding the repair; see `pushGrid`).
+let gridRejectEpoch = 0;
 
 /** tmux REJECTED a control-mode command (`%error` on the control stream).
  *
@@ -546,6 +552,7 @@ export function gridCommandRejected(): void {
   }
   if (gridErrorPushes >= GRID_ERROR_MAX_PUSHES) return; // storm — stop feeding it
   gridErrorPushes++;
+  gridRejectEpoch++; // invalidate any in-flight push's pending key record
   lastGridKeyByWindow.clear();
   if (gridTimer) clearTimeout(gridTimer);
   gridTimer = window.setTimeout(() => void pushGrid(), 350);
@@ -604,6 +611,7 @@ async function pushGrid(): Promise<void> {
   const countChanged = prevCount !== undefined && n !== prevCount;
   const layout =
     countChanged && !manualLayoutWindows.has(windowId) ? "tiled" : "none";
+  const epoch = gridRejectEpoch;
   try {
     await setGrid(windowId, winCols, winRows, layout);
     // Record the key ONLY after the push lands. The control client may still be
@@ -611,7 +619,13 @@ async function pushGrid(): Promise<void> {
     // If we recorded the key before awaiting (the old bug), the change-guard
     // above would then block every retry at this same size — the window stayed
     // stuck at its tmux birth size (200×50) until the user happened to resize.
-    lastGridKeyByWindow.set(windowId, key);
+    //
+    // …and only if no `%error` arrived while we were awaiting: `gridCommandRejected`
+    // cleared the guard precisely so the scheduled repair push would run, and
+    // re-recording this (rejected) key here would make that repair a no-op.
+    if (epoch === gridRejectEpoch) {
+      lastGridKeyByWindow.set(windowId, key);
+    }
     lastPaneCountByWindow.set(windowId, n);
   } catch {
     // Not attached yet (or transient). No fresh report may follow once the UI
