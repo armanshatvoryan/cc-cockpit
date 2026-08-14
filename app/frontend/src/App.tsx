@@ -104,9 +104,9 @@ const UsageWindowBlock: Component<{ label: string; w: UsageWindow }> = (props) =
 );
 
 const UsageFooterSegment: Component = () => (
-  <div class="footer-usage" tabIndex={0}>
+  <div class="footer-usage" tabIndex={0} aria-describedby="usage-tt">
     <span class="footer-item mono">{usageSegmentText()}</span>
-    <div class="usage-tooltip" role="tooltip">
+    <div class="usage-tooltip" role="tooltip" id="usage-tt">
       <div class="usage-tt-row">
         <span>session</span>
         <span class="mono">{store.session || "—"}</span>

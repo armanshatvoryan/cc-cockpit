@@ -401,10 +401,13 @@ export async function bootCockpit(): Promise<void> {
   // C-2 — usage footer: pull whatever the poller last computed (may be `null`
   // pre-first-pass — the footer renders `—` for that), then stay live via
   // usage:update (fired immediately by the backend, then every 45s).
-  void usageSnapshot()
-    .then(setUsage)
-    .catch((e) => console.warn("usage_snapshot failed", e));
+  // Listener first, then the pull: registering after would drop an update that
+  // lands mid-await, and the pull only fills a still-empty slot (`p ?? s`) so a
+  // fresher event can never be clobbered by the in-flight boot snapshot.
   const unUsage = await onUsageUpdate((snap) => setUsage(snap));
+  void usageSnapshot()
+    .then((s) => s && setUsage((p) => p ?? s))
+    .catch((e) => console.warn("usage_snapshot failed", e));
   // Tick the "computed Xs ago" clock every second while the cockpit is open.
   const usageTickInterval = window.setInterval(() => setUsageNow(Date.now()), 1000);
   const unUsageTick: UnlistenFn = () => clearInterval(usageTickInterval);
