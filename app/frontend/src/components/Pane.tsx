@@ -6,13 +6,14 @@
 
 import { createSignal, Show, type Component } from "solid-js";
 import type { LayoutRect, PaneInfo } from "../ipc";
-import { interruptPane, launchCc } from "../ipc";
+import { interruptPane } from "../ipc";
 import {
   focusPane,
   doClosePane,
   activePanes,
   sendPaneToNewTab,
   paneLabel,
+  directLaunchCc,
 } from "../store";
 import { StatusBadge } from "./StatusBadge";
 import { LaunchDialog } from "./LaunchDialog";
@@ -58,7 +59,7 @@ export const Pane: Component<{
                 setShowLaunch(true);
                 return;
               }
-              void launchCc(props.pane.paneId, props.pane.cwd).catch(() => {});
+              void directLaunchCc(props.pane.paneId, props.pane.cwd);
             }}
           >
             Launch CC

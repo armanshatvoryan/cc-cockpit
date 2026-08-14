@@ -1301,6 +1301,18 @@ export function cancelToggle(): void {
 
 const NAME_OK = /^[A-Za-z0-9._-]+$/;
 
+/** A1 — the pane toolbar's zero-friction "Launch CC" path: launch straight
+ *  into an existing pane (no dialog). Surfaces a failure the same way every
+ *  other launch path here does — `setStore("error", ...)` — so a bad cwd or
+ *  backend error is visible, not indistinguishable from success. */
+export async function directLaunchCc(paneId: string, cwd: string): Promise<void> {
+  try {
+    await launchCc(paneId, cwd);
+  } catch (e) {
+    setStore("error", `launch failed: ${String(e)}`);
+  }
+}
+
 export async function launchFromInventory(item: InventoryItem): Promise<void> {
   if (item.type !== "skill" && item.type !== "subagent") return;
   if (!NAME_OK.test(item.name)) {
