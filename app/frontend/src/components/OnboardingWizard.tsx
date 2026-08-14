@@ -50,6 +50,7 @@ export const OnboardingWizard: Component = () => {
   const [log, setLog] = createSignal<string[]>([]);
   const [failedTool, setFailedTool] = createSignal<PrereqTool | null>(null);
 
+  let disposed = false;
   let unlisteners: UnlistenFn[] = [];
 
   async function runCheck() {
@@ -71,7 +72,7 @@ export const OnboardingWizard: Component = () => {
     void runCheck();
     void reloadSettings(); // pre-fill step 2's folder row
     void (async () => {
-      unlisteners = [
+      const registered = [
         await onInstallLine((p) => setLog((l) => [...l, p.line])),
         await onInstallDone((p) => {
           setInstalling(null);
@@ -83,9 +84,17 @@ export const OnboardingWizard: Component = () => {
           }
         }),
       ];
+      // Unmount can race the awaits above: if cleanup already ran, tear the
+      // fresh registrations down immediately instead of leaking them.
+      if (disposed) {
+        for (const un of registered) un();
+      } else {
+        unlisteners = registered;
+      }
     })();
   });
   onCleanup(() => {
+    disposed = true;
     // Wizard closing mid-install: kill the child. No-op when idle.
     if (installing()) void cancelInstall();
     for (const un of unlisteners) un();
