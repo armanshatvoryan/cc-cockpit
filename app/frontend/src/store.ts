@@ -49,6 +49,7 @@ import {
   loadLayout,
   onPaneStatus,
   onPaneTopology,
+  onCmdError,
   onCockpitReconnected,
   onCloseRequested,
   onFileTreeChanged,
@@ -358,6 +359,15 @@ export async function bootCockpit(): Promise<void> {
     void refreshState().then(gridServerReset);
   });
 
+  // cockpit:cmd-error — tmux REJECTED a control-mode command. Log it (it was
+  // silently swallowed before) and re-arm the grid push: the rejected command is
+  // most likely the `set_grid` whose key we already recorded as pushed.
+  const unCmdError = await onCmdError((p) => {
+    const msg = p.lines.join(" ").trim();
+    console.error("tmux rejected a command:", msg || "(no message)");
+    gridCommandRejected();
+  });
+
   // cockpit:close-requested — ⌘W / window close button. Close the focused pane
   // (or the active tab if it's the last pane) instead of the whole window.
   const unCloseReq = await onCloseRequested(() => void closeFocusedPaneOrTab());
@@ -380,7 +390,17 @@ export async function bootCockpit(): Promise<void> {
   // v1.1 — live fs-watch: reload a visible dir when the backend reports it changed.
   const unFtChange = await onFileTreeChanged((p) => ftOnChanged(p.dir));
 
-  unlisteners = [unStatus, unTopo, unReconnect, unCloseReq, unFocus, unGit, unFt, unFtChange];
+  unlisteners = [
+    unStatus,
+    unTopo,
+    unReconnect,
+    unCmdError,
+    unCloseReq,
+    unFocus,
+    unGit,
+    unFt,
+    unFtChange,
+  ];
 }
 
 /** Tear down event subscriptions (window close / HMR). */
@@ -485,6 +505,39 @@ export function gridServerReset(): void {
   manualLayoutWindows.clear();
   if (gridTimer) clearTimeout(gridTimer);
   gridTimer = window.setTimeout(() => void pushGrid(), 500);
+}
+
+// A rejected command (`cockpit:cmd-error`) re-arms the push, but the push may be
+// what tmux is rejecting — clear-and-push on every error would then be a
+// self-feeding loop. Cap it: at most GRID_ERROR_MAX_PUSHES re-pushes per
+// GRID_ERROR_WINDOW_MS of continuous errors; a quiet stretch resets the budget.
+const GRID_ERROR_MAX_PUSHES = 3;
+const GRID_ERROR_WINDOW_MS = 5000;
+let gridErrorPushes = 0;
+let lastGridErrorAt = 0;
+
+/** tmux REJECTED a control-mode command (`%error` on the control stream).
+ *
+ * `setGrid` resolves as soon as the command bytes reach the server's stdin, so a
+ * rejected sizing command still recorded its grid key — and the per-window
+ * change-guard in `pushGrid` then swallowed every retry at that size, leaving the
+ * window silently at the WRONG geometry until the user resized by hand. Drop the
+ * key guard and re-push.
+ *
+ * Unlike `gridServerReset` this does NOT clear the pane counts or the
+ * manual-arrangement set: the window ids are still valid, and forgetting them
+ * would re-tile a window the user split by hand. We also can't tell WHICH
+ * command tmux rejected (control mode gives no command echo), so this is
+ * deliberately a cheap idempotent re-push, not a targeted repair. */
+export function gridCommandRejected(): void {
+  const now = Date.now();
+  if (now - lastGridErrorAt > GRID_ERROR_WINDOW_MS) gridErrorPushes = 0;
+  lastGridErrorAt = now;
+  if (gridErrorPushes >= GRID_ERROR_MAX_PUSHES) return; // storm — stop feeding it
+  gridErrorPushes++;
+  lastGridKeyByWindow.clear();
+  if (gridTimer) clearTimeout(gridTimer);
+  gridTimer = window.setTimeout(() => void pushGrid(), 350);
 }
 
 /** Pane-columns/rows the tab's CURRENT layout occupies (distinct x/y starts),

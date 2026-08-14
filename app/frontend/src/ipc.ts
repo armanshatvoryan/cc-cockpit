@@ -224,6 +224,12 @@ export interface WarmStartPayload {
   bytesB64: string;
 }
 
+/** `cockpit:cmd-error` payload — the message tmux sent inside the rejected
+ * command's `%begin`/`%error` block. */
+export interface CmdErrorPayload {
+  lines: string[];
+}
+
 // ── Terax tier-1 (git status + disk-persisted layout) ────────────────────────
 // Mirrors `gitstatus.rs` / `persist.rs` DTOs (camelCase serde). See the backend
 // contract: `git_status_snapshot(cwd)`, `save_layout(snapshot)`, `load_layout()`.
@@ -661,6 +667,19 @@ export function onPaneStatus(
  */
 export function onCockpitReconnected(handler: () => void): Promise<UnlistenFn> {
   return listen("cockpit:reconnected", () => handler());
+}
+
+/**
+ * Fired when tmux REJECTS a control-mode command (`%error`). Control mode has no
+ * per-command reply we await — `set_grid` & friends resolve as soon as the bytes
+ * reach the server's stdin — so without this a rejected sizing command was
+ * invisible: the grid key was recorded as pushed and the change-guard then
+ * blocked every retry, leaving the window silently at the wrong size.
+ */
+export function onCmdError(
+  handler: (p: CmdErrorPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<CmdErrorPayload>("cockpit:cmd-error", (e) => handler(e.payload));
 }
 
 /**
