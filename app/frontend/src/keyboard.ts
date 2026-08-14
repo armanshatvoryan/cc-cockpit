@@ -7,6 +7,7 @@
 //   ⌘I          toggle the inventory panel
 //   ⌘⇧T         toggle the live team board
 //   ⌘B          toggle the docked file-tree sidebar
+//   ⌘⇧B         toggle the docked sessions sidebar (parked `_sb:` sessions)
 //   ⌘,          toggle the settings dialog (macOS Preferences convention)
 //   ⌘= / ⌘+     zoom the whole UI in   (+0.1)
 //   ⌘-          zoom the whole UI out  (−0.1)
@@ -31,6 +32,7 @@ import {
   closeTeamBoard,
   teamBoardOpen,
   toggleSidebar,
+  toggleSessionsPanel,
   toggleSettings,
   closeSettings,
   settingsOpen,
@@ -170,10 +172,11 @@ export function installKeyboard(): void {
       return;
     }
 
-    // ⌘B — toggle the docked file-tree sidebar.
+    // ⌘B — toggle the docked file-tree sidebar. ⌘⇧B — the sessions sidebar.
     if (k === "b") {
       e.preventDefault();
-      toggleSidebar();
+      if (e.shiftKey) toggleSessionsPanel();
+      else toggleSidebar();
       return;
     }
   }

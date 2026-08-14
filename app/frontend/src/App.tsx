@@ -12,6 +12,10 @@ import {
   newTab,
   clearError,
   sidebarVisible,
+  sessionsPanelOpen,
+  toggleSessionsPanel,
+  reachablePanes,
+  storedNeedsInputCount,
   ftInitHome,
   settingsOpen,
   usage,
@@ -24,6 +28,7 @@ import { PaneGrid } from "./components/PaneGrid";
 import { FileTreePanel } from "./components/FileTreePanel";
 import { InventoryPanel } from "./components/InventoryPanel";
 import { TeamBoardPanel } from "./components/TeamBoardPanel";
+import { SessionsPanel } from "./components/SessionsPanel";
 import { SpinupDialog } from "./components/SpinupDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 
@@ -184,16 +189,42 @@ export const App: Component = () => {
             <footer class="footer">
               <UsageFooterSegment />
               <span class="footer-spacer" />
+              <Show when={store.stored.length > 0}>
+                <button
+                  class="footer-sessions"
+                  classList={{ attn: storedNeedsInputCount() > 0 }}
+                  title={
+                    storedNeedsInputCount() > 0
+                      ? `${storedNeedsInputCount()} parked session${
+                          storedNeedsInputCount() === 1 ? "" : "s"
+                        } waiting on you — ⌘⇧B`
+                      : "Parked sessions (⌘⇧B)"
+                  }
+                  onClick={toggleSessionsPanel}
+                >
+                  ⇥ {store.stored.length}
+                  <Show when={storedNeedsInputCount() > 0}>
+                    <span class="footer-sessions-attn">
+                      {storedNeedsInputCount()}
+                    </span>
+                  </Show>
+                </button>
+              </Show>
               <span class="footer-item">
                 {store.tabs.length} tab{store.tabs.length === 1 ? "" : "s"} ·{" "}
-                {store.panes.length} pane{store.panes.length === 1 ? "" : "s"}
+                {reachablePanes().length} pane
+                {reachablePanes().length === 1 ? "" : "s"}
               </span>
               <span class="footer-keys">
-                ⌘B files · ⌘T tab · ⌘1-9 switch · ⌘D split · ⌘I inventory · ⌘⇧T
-                teams · ⌘, settings
+                ⌘B files · ⌘⇧B sessions · ⌘T tab · ⌘1-9 switch · ⌘D split · ⌘I
+                inventory · ⌘⇧T teams · ⌘, settings
               </span>
             </footer>
           </div>
+
+          <Show when={sessionsPanelOpen()}>
+            <SessionsPanel />
+          </Show>
         </div>
 
         <InventoryPanel />
