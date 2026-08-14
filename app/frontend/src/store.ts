@@ -509,12 +509,19 @@ export function gridServerReset(): void {
 
 // A rejected command (`cockpit:cmd-error`) re-arms the push, but the push may be
 // what tmux is rejecting — clear-and-push on every error would then be a
-// self-feeding loop. Cap it: at most GRID_ERROR_MAX_PUSHES re-pushes per
-// GRID_ERROR_WINDOW_MS of continuous errors; a quiet stretch resets the budget.
+// self-feeding loop. So this is a RATE LIMIT: at most GRID_ERROR_MAX_PUSHES
+// re-pushes per GRID_ERROR_WINDOW_MS of wall clock, budget refilled when the
+// window rolls over.
+//
+// It deliberately does NOT reset on a gap between errors: `cmd-error` fires for
+// ANY rejected command, so a recurring unrelated rejection (say every 2s) never
+// leaves a 5s gap — a silence-based reset would burn the budget in one burst and
+// then disarm grid repair permanently, silently reinstating the wrong-size
+// window this whole listener exists to fix.
 const GRID_ERROR_MAX_PUSHES = 3;
 const GRID_ERROR_WINDOW_MS = 5000;
 let gridErrorPushes = 0;
-let lastGridErrorAt = 0;
+let gridErrorWindowStartedAt = 0;
 
 /** tmux REJECTED a control-mode command (`%error` on the control stream).
  *
@@ -531,8 +538,12 @@ let lastGridErrorAt = 0;
  * deliberately a cheap idempotent re-push, not a targeted repair. */
 export function gridCommandRejected(): void {
   const now = Date.now();
-  if (now - lastGridErrorAt > GRID_ERROR_WINDOW_MS) gridErrorPushes = 0;
-  lastGridErrorAt = now;
+  // Roll the window forward from ITS start, not from the last error, so a
+  // steady error stream still gets its budget back every GRID_ERROR_WINDOW_MS.
+  if (now - gridErrorWindowStartedAt > GRID_ERROR_WINDOW_MS) {
+    gridErrorWindowStartedAt = now;
+    gridErrorPushes = 0;
+  }
   if (gridErrorPushes >= GRID_ERROR_MAX_PUSHES) return; // storm — stop feeding it
   gridErrorPushes++;
   lastGridKeyByWindow.clear();
