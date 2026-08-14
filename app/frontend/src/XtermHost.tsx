@@ -143,29 +143,83 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     const RESYNC_DEBOUNCE_MS = 300; // drag storms collapse into one resync
     const RESYNC_QUIET_MS = 250; // pane output must be quiet this long
     const RESYNC_MAX_WAIT_MS = 2000; // streaming panes: resync anyway
+    const RESYNC_STABLE_GAP_MS = 120; // gap between the confirm captures
+    const RESYNC_STABLE_PAIRS = 3; // max consecutive pairs compared
     let lastOutputAt = 0;
     let resyncTimer: number | undefined;
-    // Bumped per scheduled resync so an in-flight warm start can tell its
-    // capture went stale (see maybeWarmStart).
+    // Bumped per scheduled resync so an in-flight warm start — or an in-flight
+    // capture chain from an EARLIER resync — can tell it went stale (see
+    // maybeWarmStart / the `gen !== resyncGen` guards below).
     let resyncGen = 0;
+
+    /** Repaint the pane from a capture: escape-level clear, then the bytes.
+     *
+     * Clear via escape codes, NOT term.reset(): reset() also wipes terminal
+     * MODES (application cursor keys, bracketed paste, mouse tracking) that the
+     * capture cannot restore — arrows and scroll would break in the resynced
+     * pane until its app re-asserted them. 2J = clear screen, 3J = clear
+     * scrollback, H = home. Same visible effect as reset, modes untouched
+     * (Ctrl+L never touches them either). */
+    const writeResync = (bytesB64: string) => {
+      term.write("\x1b[2J\x1b[3J\x1b[H");
+      if (bytesB64) term.write(b64ToBytes(bytesB64));
+    };
+
     const scheduleResync = () => {
       resyncGen++;
       if (resyncTimer) clearTimeout(resyncTimer);
+      const gen = resyncGen;
       const startedAt = Date.now();
+
+      // Busy-pane path: the quiet gate capped out, so the pane is STILL
+      // streaming and any single capture may be a half-drawn frame — writing
+      // that is the very garble we're repairing. tmux's grid is authoritative,
+      // so instead of guessing, confirm it settled: capture repeatedly
+      // ~RESYNC_STABLE_GAP_MS apart and only paint once two CONSECUTIVE
+      // captures are byte-identical (the pane is between frames). After
+      // RESYNC_STABLE_PAIRS pairs we paint the last capture anyway — i.e.
+      // exactly today's capped-out behaviour, so this can only be better, never
+      // worse. Worst case adds 3×120ms to a resync that already waited 2s.
+      // Still zero keystroke injection (standing ruling, root cause #7).
+      const confirmStable = (prev: string | undefined, capturesLeft: number) => {
+        if (disposed || gen !== resyncGen) return;
+        warmStartScreen(paneId)
+          .then((w) => {
+            if (disposed || gen !== resyncGen) return;
+            const stable = prev !== undefined && w.bytesB64 === prev;
+            if (stable || capturesLeft <= 1) {
+              writeResync(w.bytesB64);
+              return;
+            }
+            resyncTimer = window.setTimeout(
+              () => confirmStable(w.bytesB64, capturesLeft - 1),
+              RESYNC_STABLE_GAP_MS,
+            );
+          })
+          .catch(() => {}); // pane gone mid-resync — cleanup handles it
+      };
+
       const attempt = (retriesLeft: number) => {
-        if (disposed) return;
+        // A newer resync was scheduled while this chain was pending: it will
+        // capture a fresher grid, so abandon this one rather than painting the
+        // old geometry over it.
+        if (disposed || gen !== resyncGen) return;
         const quietFor = Date.now() - lastOutputAt;
-        if (
-          quietFor < RESYNC_QUIET_MS &&
-          Date.now() - startedAt < RESYNC_MAX_WAIT_MS
-        ) {
-          resyncTimer = window.setTimeout(() => attempt(retriesLeft), 150);
+        const cappedOut = Date.now() - startedAt >= RESYNC_MAX_WAIT_MS;
+        if (quietFor < RESYNC_QUIET_MS) {
+          if (!cappedOut) {
+            resyncTimer = window.setTimeout(() => attempt(retriesLeft), 150);
+            return;
+          }
+          // Never went quiet within MAX_WAIT — confirm by double capture.
+          // N pairs = N+1 captures compared consecutively.
+          confirmStable(undefined, RESYNC_STABLE_PAIRS + 1);
           return;
         }
         const outputMark = lastOutputAt;
         warmStartScreen(paneId)
           .then((w) => {
-            if (disposed) return;
+            if (disposed || gen !== resyncGen) return;
             // Output landed while the capture RPC was in flight — the capture
             // may hold a stale mid-frame. Retry once; then take what we have
             // (a busy pane repaints itself soon anyway).
@@ -173,15 +227,7 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
               attempt(retriesLeft - 1);
               return;
             }
-            // Clear via escape codes, NOT term.reset(): reset() also wipes
-            // terminal MODES (application cursor keys, bracketed paste, mouse
-            // tracking) that the capture cannot restore — arrows and scroll
-            // would break in the resynced pane until its app re-asserted them.
-            // 2J = clear screen, 3J = clear scrollback, H = home. Same visible
-            // effect as reset, modes untouched (Ctrl+L never touches them
-            // either).
-            term.write("\x1b[2J\x1b[3J\x1b[H");
-            if (w.bytesB64) term.write(b64ToBytes(w.bytesB64));
+            writeResync(w.bytesB64);
           })
           .catch(() => {}); // pane gone mid-resync — cleanup handles it
       };
