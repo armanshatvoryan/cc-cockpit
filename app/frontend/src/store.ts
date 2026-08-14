@@ -1506,8 +1506,11 @@ export async function launchFromInventory(item: InventoryItem): Promise<void> {
         setStore("error", "launch failed — no working directory");
         return;
       }
-      await launchAgent(paneId, cwd, item.name);
+      // Reveal BEFORE the launch, not after: the window is already stored at
+      // this point, so if `launchAgent` throws we'd otherwise leave a parked
+      // session the user has no visible dock to find or kill it from.
       revealSessionsPanelOnce();
+      await launchAgent(paneId, cwd, item.name);
       closeInventory(); // reveal the sidebar row
       return;
     }
@@ -1659,7 +1662,10 @@ export async function syncFileTreeRoot(): Promise<void> {
       cwd = undefined; // dead/odd pane — fall back below
     }
   }
-  if (!cwd) cwd = focusedPane()?.cwd || store.panes[0]?.cwd;
+  // Last-ditch fallback walks REACHABLE panes: `store.panes[0]` can be a parked
+  // pane, which would root the tree at a dir belonging to a session that has no
+  // tab and that the user isn't looking at.
+  if (!cwd) cwd = focusedPane()?.cwd || reachablePanes()[0]?.cwd;
   if (cwd && cwd !== fileTree.root) ftSetRoot(cwd);
 }
 
@@ -1945,8 +1951,23 @@ export function paneLabel(pane: PaneInfo): { text: string; tooltip: string } {
   return { text, tooltip: tooltipParts.join(" — ") || pane.paneId };
 }
 /** Attach a file to a chosen agent: insert its path into that agent's pane.
- *  (insertPathInto detects the claude pane → `@path` mention.) */
+ *  (insertPathInto detects the claude pane → `@path` mention.)
+ *
+ *  Wave D — the submenu keys off `memberPaneIsLive`, which reads raw
+ *  `store.panes`, and PARKED panes stay there (D-1 keeps them so a stored
+ *  session keeps streaming status). So a parked agent is a selectable target,
+ *  and inserting into it would type a path into a pane with no tab — the user
+ *  would never see it land. Un-park first, exactly as `focusTeamMemberPane`
+ *  does, so the insert always goes somewhere visible. */
 export async function ftAttachToAgent(entry: FileEntry, paneId: string): Promise<void> {
+  const parked = store.stored.find((s) => s.paneIds.includes(paneId));
+  if (parked) {
+    await restoreStoredSession(parked.windowId);
+    // `restoreStoredSession` reports its own failure and never rejects, so
+    // re-check that the un-park actually landed — a blind insert here would put
+    // the path back into a still-hidden pane, the very bug this guards.
+    if (store.stored.some((s) => s.paneIds.includes(paneId))) return;
+  }
   await insertPathInto(paneId, entry.path);
 }
 

@@ -309,6 +309,13 @@ pub fn stored_label(name: &str) -> Option<&str> {
 ///   * `\t` / `\n` / `\r` are DROPPED: `list-windows -F` rows are TAB-delimited
 ///     and line-based, so either character would fuse or split a parse row and
 ///     hand the frontend a garbage tab.
+///   * `#` is DROPPED: window names are substituted back into `-F` format
+///     strings and tmux RE-EXPANDS them, so a label containing `#{...}` /
+///     `#S` reads back as something else entirely (verified on tmux 3.6b:
+///     `_sb:#{window_id}x#S` reads back as `_sb:@0xt1`). Since part of the
+///     label chain is OSC-set `pane_title` — i.e. attacker-controlled — that
+///     mismatch would both mis-render the sidebar row and let `unstore_window`
+///     persist the EXPANDED text as the real tab name.
 ///   * A leading `STORED_PREFIX` (however many times) is stripped, so a label
 ///     can never nest into `_sb:_sb:x` — which would unstore to `_sb:x` and
 ///     stay invisible forever.
@@ -316,14 +323,15 @@ pub fn stored_label(name: &str) -> Option<&str> {
 ///     reaches `rename-window -t @n <name>` as its own argv word) can never be
 ///     read by tmux as an option.
 ///   * Outer whitespace is trimmed, other control chars dropped, and the result
-///     is clamped to `MAX_LABEL_LEN` chars.
+///     is clamped to `MAX_LABEL_LEN` chars — then trimmed again on the right, so
+///     a clamp landing mid-space can't leave an invisible trailing blank.
 ///
 /// May return an empty string — callers reject that rather than storing an
 /// unnamed session.
 pub fn sanitize_label(label: &str) -> String {
     let mut s: String = label
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && *c != '#')
         .collect::<String>()
         .trim()
         .to_string();
@@ -338,7 +346,13 @@ pub fn sanitize_label(label: &str) -> String {
             break;
         }
     }
-    s.chars().take(MAX_LABEL_LEN).collect()
+    // Clamping can land mid-space ("a<79 chars> b" -> "a<79 chars> "), and a
+    // trailing space in a window name is invisible-but-real, so re-trim the tail.
+    s.chars()
+        .take(MAX_LABEL_LEN)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 /// Split a freshly-parsed window list into visible tabs and stored sessions.
@@ -1578,6 +1592,22 @@ mod tests {
         assert_eq!(sanitize_label("\t\n"), "");
         // Overlong labels are clamped so a window name can't blow up the bar.
         assert_eq!(sanitize_label(&"x".repeat(200)).chars().count(), 80);
+        // ...and a clamp that lands on a space must not leave a trailing blank.
+        let clamped = sanitize_label(&format!("{} tail", "x".repeat(MAX_LABEL_LEN - 1)));
+        assert_eq!(clamped, "x".repeat(MAX_LABEL_LEN - 1));
+
+        // `#` is tmux's format-expansion sigil. Window names get substituted
+        // back into `-F` strings and RE-EXPANDED, so any surviving `#` would
+        // make the readback differ from what was stored (tmux 3.6b turns
+        // `_sb:#{window_id}x#S` into `_sb:@0xt1`) — and `unstore_window` would
+        // then persist that expansion as the tab name. Part of the label chain
+        // is OSC-set `pane_title`, so this input is untrusted.
+        assert_eq!(sanitize_label("#{window_id}x#S"), "{window_id}xS");
+        assert_eq!(sanitize_label("#{session_name}"), "{session_name}");
+        assert_eq!(sanitize_label("###"), "");
+        // A label that is nothing but sigils collapses to empty, which callers
+        // reject rather than storing an unnamed session.
+        assert_eq!(sanitize_label("  ##  "), "");
     }
 
     #[test]
