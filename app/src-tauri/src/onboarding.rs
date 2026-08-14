@@ -193,14 +193,13 @@ pub fn install_prereq(
     Ok(())
 }
 
-/// Kill the whole install process group (zsh + brew/npm + their children).
-/// SIGTERM first; if the group is still alive after a short grace, SIGKILL —
-/// a child that ignores TERM must not outlive the app or wedge the
-/// one-install guard. Best-effort: the reader thread sees EOF and emits
-/// `install-done` itself. `/bin/kill` with a negative pgid avoids a libc
-/// dependency.
-pub fn kill_running_install(guard: &InstallGuard) {
-    let pgid = *guard.0.lock().unwrap();
+/// TERM → grace → KILL for a process group. Blocking (sleeps) — callers on
+/// the main thread must wrap it in spawn_blocking. SIGTERM first; if the
+/// group is still alive after a short grace, SIGKILL — a child that ignores
+/// TERM must not outlive the app or wedge the one-install guard.
+/// Best-effort: the reader thread sees EOF and emits `install-done` itself.
+/// `/bin/kill` with a negative pgid avoids a libc dependency.
+fn kill_pgid(pgid: Option<u32>) {
     let Some(pgid) = pgid else { return };
     let group = format!("-{pgid}");
     let _ = Command::new("/bin/kill").args(["-TERM", &group]).status();
@@ -216,10 +215,19 @@ pub fn kill_running_install(guard: &InstallGuard) {
     }
 }
 
-/// Frontend cancel button / wizard-close hook.
+/// App-exit path: blocking is fine — the process is quitting anyway.
+pub fn kill_running_install(guard: &InstallGuard) {
+    kill_pgid(*guard.0.lock().unwrap());
+}
+
+/// Frontend cancel button / wizard-close hook. Async so the TERM→grace→KILL
+/// escalation never blocks the main thread.
 #[tauri::command]
-pub fn cancel_install(guard: State<InstallGuard>) {
-    kill_running_install(&guard);
+pub async fn cancel_install(guard: State<'_, InstallGuard>) -> Result<(), String> {
+    let pgid = *guard.0.lock().unwrap();
+    tauri::async_runtime::spawn_blocking(move || kill_pgid(pgid))
+        .await
+        .map_err(|e| format!("cancel task: {e}"))
 }
 
 #[cfg(test)]

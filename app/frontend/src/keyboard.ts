@@ -34,6 +34,8 @@ import {
   toggleSettings,
   closeSettings,
   settingsOpen,
+  onboardingOpen,
+  onboardingMode,
 } from "./store";
 
 // ── C1: whole-UI zoom (webview setZoom, persisted) ───────────────────────────
@@ -92,6 +94,10 @@ function restoreZoom(): void {
 
 export function installKeyboard(): void {
   function onKey(e: KeyboardEvent) {
+    // First-run wizard owns the screen: shortcuts would bypass the deferred
+    // boot (⌘T creates the tmux session decideBoot deliberately hasn't).
+    if (onboardingOpen() && onboardingMode() === "first-run") return;
+
     // Esc closes the inventory panel if it's open (intercept BEFORE xterm so a
     // stray Esc dismisses the overlay rather than reaching a terminal process).
     if (

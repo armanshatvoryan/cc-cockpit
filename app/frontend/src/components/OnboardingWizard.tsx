@@ -79,6 +79,8 @@ export const OnboardingWizard: Component = () => {
           if (p.exitCode === 0) {
             setFailedTool(null);
             void runCheck(); // re-probe so the row flips to ✓ by itself
+          } else if (p.exitCode === -1) {
+            setFailedTool(null); // signal-kill = user cancel, not a failure
           } else {
             setFailedTool(p.tool); // log stays expanded; manual fallback shows
           }
