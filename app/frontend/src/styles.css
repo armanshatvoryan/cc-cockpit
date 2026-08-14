@@ -666,6 +666,69 @@ button {
   color: var(--fg-faint);
 }
 
+/* ── Usage footer segment (C-2) — compact burn readout + hover tooltip ──────── */
+
+.footer-usage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  outline: none;
+}
+.footer-usage .footer-item {
+  cursor: default;
+}
+.usage-tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 80;
+  width: 260px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-3);
+  box-shadow: var(--shadow-menu);
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  white-space: normal;
+}
+.footer-usage:hover .usage-tooltip,
+.footer-usage:focus-within .usage-tooltip {
+  display: block;
+}
+.usage-tt-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 1.5px 0;
+}
+.usage-tt-head {
+  color: var(--fg);
+  font-weight: 600;
+}
+.usage-tt-faint {
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+.usage-tt-model {
+  padding-left: 8px;
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+.usage-tt-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-tt-divider {
+  height: 1px;
+  margin: 5px 0;
+  background: var(--border);
+}
+
 /* ── Empty state ────────────────────────────────────────────────────────────── */
 
 .empty-state {
