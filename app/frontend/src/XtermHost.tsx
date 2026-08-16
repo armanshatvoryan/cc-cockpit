@@ -144,13 +144,35 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     const RESYNC_QUIET_MS = 250; // pane output must be quiet this long
     const RESYNC_MAX_WAIT_MS = 2000; // streaming panes: resync anyway
     const RESYNC_STABLE_GAP_MS = 120; // gap between the confirm captures
-    const RESYNC_STABLE_PAIRS = 3; // max consecutive pairs compared
+    // 2 pairs = 3 captures. Each capture takes the global mgr mutex that also
+    // serializes keystrokes, so a busy-pane resync is felt as input latency —
+    // 4 captures amplified that beyond what the extra confidence is worth
+    // (owner ruling 2026-08-14).
+    const RESYNC_STABLE_PAIRS = 2; // max consecutive pairs compared
     let lastOutputAt = 0;
     let resyncTimer: number | undefined;
     // Bumped per scheduled resync so an in-flight warm start — or an in-flight
     // capture chain from an EARLIER resync — can tell it went stale (see
     // maybeWarmStart / the `gen !== resyncGen` guards below).
     let resyncGen = 0;
+    // "A resync owns this pane's repaint." Set when one is scheduled; stays true
+    // after it PAINTS (its repaint supersedes the mount warm start, and the
+    // generation counter cannot express that — a resync scheduled BEFORE warm
+    // start dispatches shares its generation, so `gen !== resyncGen` never trips
+    // and slow warm-start bytes would land AFTER the resync's clear+repaint:
+    // appended, no clear, wrong cursor → garble until the next resize).
+    //
+    // INVARIANT: every terminal outcome of every chain — painted, resolved with
+    // an empty capture (writeResync no-ops), or rejected — either paints the
+    // pane or calls `releaseResync`, which hands the pane back to warm start.
+    // No path may consume both, or the pane stays blank until the next resize.
+    let resyncPending = false;
+    /** This chain ended without painting — let a deferred warm start proceed. */
+    const releaseResync = (gen: number) => {
+      if (disposed || gen !== resyncGen) return; // a newer chain owns the pane
+      resyncPending = false;
+      maybeWarmStart(); // may have deferred on us; re-check now that we're done
+    };
 
     /** Repaint the pane from a capture: escape-level clear, then the bytes.
      *
@@ -159,14 +181,23 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
      * capture cannot restore — arrows and scroll would break in the resynced
      * pane until its app re-asserted them. 2J = clear screen, 3J = clear
      * scrollback, H = home. Same visible effect as reset, modes untouched
-     * (Ctrl+L never touches them either). */
-    const writeResync = (bytesB64: string) => {
+     * (Ctrl+L never touches them either).
+     *
+     * Returns whether it actually painted — an empty capture is a no-op, and the
+     * caller must then release the latch (see the INVARIANT above). */
+    const writeResync = (bytesB64: string): boolean => {
+      // An empty capture is not "the pane is empty" — it is a capture that told
+      // us nothing (RPC returned blank). Clearing on it would DESTROY the pane's
+      // real content to paint nothing, so treat it as a no-op.
+      if (!bytesB64) return false;
       term.write("\x1b[2J\x1b[3J\x1b[H");
-      if (bytesB64) term.write(b64ToBytes(bytesB64));
+      term.write(b64ToBytes(bytesB64));
+      return true;
     };
 
     const scheduleResync = () => {
       resyncGen++;
+      resyncPending = true;
       if (resyncTimer) clearTimeout(resyncTimer);
       const gen = resyncGen;
       const startedAt = Date.now();
@@ -179,7 +210,7 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       // captures are byte-identical (the pane is between frames). After
       // RESYNC_STABLE_PAIRS pairs we paint the last capture anyway — i.e.
       // exactly today's capped-out behaviour, so this can only be better, never
-      // worse. Worst case adds 3×120ms to a resync that already waited 2s.
+      // worse. Worst case adds 2×120ms to a resync that already waited 2s.
       // Still zero keystroke injection (standing ruling, root cause #7).
       const confirmStable = (prev: string | undefined, capturesLeft: number) => {
         if (disposed || gen !== resyncGen) return;
@@ -188,7 +219,8 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
             if (disposed || gen !== resyncGen) return;
             const stable = prev !== undefined && w.bytesB64 === prev;
             if (stable || capturesLeft <= 1) {
-              writeResync(w.bytesB64);
+              // Terminal: painted, or the capture was empty and nothing happened.
+              if (!writeResync(w.bytesB64)) releaseResync(gen);
               return;
             }
             resyncTimer = window.setTimeout(
@@ -196,7 +228,11 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
               RESYNC_STABLE_GAP_MS,
             );
           })
-          .catch(() => {}); // pane gone mid-resync — cleanup handles it
+          .catch(() => {
+            // pane gone mid-resync — cleanup handles it. This chain will never
+            // paint, so release the pane back to a deferred warm start.
+            releaseResync(gen);
+          });
       };
 
       const attempt = (retriesLeft: number) => {
@@ -227,9 +263,14 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
               attempt(retriesLeft - 1);
               return;
             }
-            writeResync(w.bytesB64);
+            // Terminal: painted, or the capture was empty and nothing happened.
+            if (!writeResync(w.bytesB64)) releaseResync(gen);
           })
-          .catch(() => {}); // pane gone mid-resync — cleanup handles it
+          .catch(() => {
+            // See confirmStable's catch: a dead chain must not keep a deferred
+            // warm start blocked forever.
+            releaseResync(gen);
+          });
       };
       resyncTimer = window.setTimeout(() => attempt(1), RESYNC_DEBOUNCE_MS);
     };
@@ -251,20 +292,42 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     // Whichever lands second fires it; it fires exactly once.
     let listenerReady = false;
     let sizeSettled = false;
-    let warmStarted = false;
+    let warmStarted = false; // it PAINTED (not merely "was attempted")
+    let warmStartInFlight = false;
+    // A dispatch that resolves stale or empty does NOT consume the warm start —
+    // otherwise a resync that then fails to paint leaves the pane blank forever
+    // (both consumed). It stays eligible and any later trigger retries it, so
+    // cap the retries: an RPC that keeps returning nothing must not spin.
+    let warmStartTries = 0;
+    const WARM_START_MAX_TRIES = 3;
     const maybeWarmStart = () => {
-      if (disposed || warmStarted || !listenerReady || !sizeSettled) return;
-      warmStarted = true;
+      if (disposed || warmStarted || warmStartInFlight) return;
+      if (!listenerReady || !sizeSettled) return;
+      // A resync owns the repaint: defer WITHOUT consuming the one shot. If that
+      // chain paints, `resyncPending` stays true and warm start never fires
+      // (correct — the resync's grid is the fresher one). If it ends without
+      // painting, `releaseResync` calls back in here and we dispatch then.
+      if (resyncPending) return;
+      if (warmStartTries >= WARM_START_MAX_TRIES) return;
+      warmStartTries++;
+      warmStartInFlight = true;
       // A resize can land while the capture RPC is in flight; the resync it
       // schedules paints a fresher grid at the NEW size, so this reply is
       // stale — writing it would repaint the old geometry over the new one.
+      // The generation guard alone is not enough: a resync scheduled BEFORE this
+      // dispatch shares this generation, so it never trips — hence `resyncPending`.
       const gen = resyncGen;
       warmStart(paneId)
         .then((w) => {
-          if (disposed || gen !== resyncGen || !w.bytesB64) return;
+          warmStartInFlight = false;
+          if (disposed || gen !== resyncGen || resyncPending || !w.bytesB64)
+            return; // stale or nothing to paint — stays eligible for a retry
+          warmStarted = true;
           term.write(b64ToBytes(w.bytesB64));
         })
-        .catch(() => {});
+        .catch(() => {
+          warmStartInFlight = false;
+        });
     };
     // Safety net: a pane whose tmux geometry never parses gets no rect at all
     // (PaneGrid falls back to a CSS grid and passes rect=undefined). Waiting
@@ -272,6 +335,12 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     // unsized replay — so after a grace period we warm start anyway.
     const WARM_START_RECT_WAIT_MS = 1500;
     const rectWaitTimer = window.setTimeout(() => {
+      // Firing this net means the pane replays UNSIZED and the first real rect
+      // (if one ever arrives) resyncs it, costing its local scrollback. Silent
+      // scrollback loss is undiagnosable from a bug report — say so.
+      console.warn(
+        `[xterm] pane ${paneId}: no rect within ${WARM_START_RECT_WAIT_MS}ms — warm starting unsized (a later rect will resync and drop local scrollback)`,
+      );
       sizeSettled = true; // "no rect is coming" — unblock the gate
       maybeWarmStart();
     }, WARM_START_RECT_WAIT_MS);

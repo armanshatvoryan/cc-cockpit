@@ -12,6 +12,7 @@
 //! The IPC contract this exposes is documented in the final report; command
 //! names + payloads are stable for the frontend to build against.
 
+pub mod awake;
 pub mod filetree;
 pub mod gitstatus;
 pub mod inventory;
@@ -872,6 +873,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
+        .manage(awake::AwakeState::default())
         .invoke_handler(tauri::generate_handler![
             cockpit_init,
             create_tab,
@@ -918,6 +920,8 @@ pub fn run() {
             settings::save_settings,
             settings::effective_default_cwd,
             gitstatus::git_status_snapshot,
+            awake::awake_set,
+            awake::awake_get,
         ])
         .setup(|app| {
             // Must run before the frontend's `cockpit_init` reaches

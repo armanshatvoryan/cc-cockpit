@@ -675,6 +675,22 @@ button {
   font-family: var(--mono);
   color: var(--fg-faint);
 }
+.awake-toggle {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--fg-faint);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.awake-toggle:hover {
+  color: var(--fg-dim);
+}
+.awake-toggle.on {
+  color: var(--accent-fg);
+}
 
 /* ── Usage footer segment (C-2) — compact burn readout + hover tooltip ──────── */
 
@@ -684,6 +700,12 @@ button {
   align-items: center;
   flex: 0 0 auto;
   outline: none;
+}
+/* Keyboard users get a visible ring in place of the suppressed default outline
+   (the element is a tab stop — WCAG 2.4.7); mouse focus stays unringed. */
+.footer-usage:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
 }
 .footer-usage .footer-item {
   cursor: default;

@@ -34,7 +34,8 @@
 //! never propagated. A broken transcript costs you one message in the total, not
 //! the whole meter. The scan root is INJECTABLE so the tests run entirely against
 //! `$TMPDIR` fixtures; a test that touches the live `~/.claude` is a failing test
-//! by definition.
+//! by definition — the sole exception is the `#[ignore]`d `real_corpus_sanity`
+//! opt-in, which is never part of a default `cargo test` run.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -83,9 +84,12 @@ pub struct UsageWindow {
     /// Assistant messages counted in this window.
     pub messages: u64,
     pub by_model: Vec<ModelUsage>,
-    /// Trailing-30-minute velocity: tokens in the last 30 min / 30. Same measure
-    /// on both windows by construction (30 min ⊂ 5h ⊂ 7d) — it is a "how hot is
-    /// it right now" readout, not a per-window average.
+    /// Trailing-30-minute velocity: **input + output** tokens in the last 30 min
+    /// / 30. Cache reads are deliberately excluded so this is comparable with the
+    /// two window totals rendered beside it (also in+out); including them would
+    /// inflate the rate by orders of magnitude on a cache-heavy corpus. Same
+    /// measure on both windows by construction (30 min ⊂ 5h ⊂ 7d) — it is a "how
+    /// hot is it right now" readout, not a per-window average.
     pub tokens_per_min: f64,
 }
 
@@ -366,7 +370,7 @@ impl UsageScanner {
                 five.add(r);
             }
             if r.ts_ms >= vel_from {
-                velocity_tokens += r.input + r.output + r.cache;
+                velocity_tokens += r.input + r.output;
             }
         }
 
@@ -790,7 +794,8 @@ mod tests {
         );
         let mut sc = UsageScanner::new(&sb.home());
         let snap = sc.scan(NOW);
-        assert_eq!(snap.five_hour.tokens_per_min, 600.0 / 30.0);
+        // in+out only (100 + 200) — the 300 cache tokens are excluded by design.
+        assert_eq!(snap.five_hour.tokens_per_min, 300.0 / 30.0);
         // Same velocity on both windows (30m ⊂ 5h ⊂ 7d).
         assert_eq!(snap.week.tokens_per_min, snap.five_hour.tokens_per_min);
         // …but the windows' totals still include the older record.

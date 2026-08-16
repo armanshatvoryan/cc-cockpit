@@ -50,6 +50,8 @@ import {
   gitStatusSnapshot,
   saveLayout,
   loadLayout,
+  awakeSet,
+  awakeGet,
   onPaneStatus,
   onPaneTopology,
   onCmdError,
@@ -58,6 +60,7 @@ import {
   onFileTreeChanged,
   usageSnapshot,
   onUsageUpdate,
+  type AwakePayload,
   type CockpitState,
   type PaneInfo,
   type PaneStatus,
@@ -397,6 +400,8 @@ export async function bootCockpit(): Promise<void> {
   await restoreLayout();
   // dev#2 — paint the active tab's git badge immediately, then poll it.
   void refreshActiveGitStatus();
+  // keep-awake toggle: pick up a caffeinate child from before a webview reload.
+  void syncAwake();
 
   // pane:status — patch the matching pane's status badge in place.
   const unStatus = await onPaneStatus((p) => {
@@ -423,11 +428,20 @@ export async function bootCockpit(): Promise<void> {
   // opening the board. Separate timer/delay from the state reconcile above —
   // this is a "nice to have eventually", not on the topology critical path.
   let teamTopoTimer: number | undefined;
-  const unTopo = await onPaneTopology(() => {
+  const unTopo = await onPaneTopology((p) => {
     if (topoTimer) clearTimeout(topoTimer);
     topoTimer = window.setTimeout(() => void refreshState(), 120);
+    // Only a STRUCTURAL change can bring a new teammate pane into existence.
+    // `activePaneChanged` fires on every focus click and `paneModeChanged` on
+    // copy-mode toggles — sweeping ~/.claude/teams off those is pure waste.
+    if (p.kind !== "layoutChange" && p.kind !== "windowAdd") return;
     if (teamTopoTimer) clearTimeout(teamTopoTimer);
-    teamTopoTimer = window.setTimeout(() => void loadTeamRunsNow(), 400);
+    // QUIET: this reload is speculative, so it must never flip the board into
+    // its "loading…" fallback — an open board would blank on every new pane.
+    teamTopoTimer = window.setTimeout(
+      () => void loadTeamRunsNow({ quiet: true }),
+      400,
+    );
   });
 
   // cockpit:reconnected — backend re-healed a vanished server. Reload state, then
@@ -474,10 +488,13 @@ export async function bootCockpit(): Promise<void> {
   // C-2 — usage footer: pull whatever the poller last computed (may be `null`
   // pre-first-pass — the footer renders `—` for that), then stay live via
   // usage:update (fired immediately by the backend, then every 45s).
-  void usageSnapshot()
-    .then(setUsage)
-    .catch((e) => console.warn("usage_snapshot failed", e));
+  // Listener first, then the pull: registering after would drop an update that
+  // lands mid-await, and the pull only fills a still-empty slot (`p ?? s`) so a
+  // fresher event can never be clobbered by the in-flight boot snapshot.
   const unUsage = await onUsageUpdate((snap) => setUsage(snap));
+  void usageSnapshot()
+    .then((s) => s && setUsage((p) => p ?? s))
+    .catch((e) => console.warn("usage_snapshot failed", e));
   // Tick the "computed Xs ago" clock every second while the cockpit is open.
   const usageTickInterval = window.setInterval(() => setUsageNow(Date.now()), 1000);
   const unUsageTick: UnlistenFn = () => clearInterval(usageTickInterval);
@@ -616,6 +633,12 @@ const GRID_ERROR_MAX_PUSHES = 3;
 const GRID_ERROR_WINDOW_MS = 5000;
 let gridErrorPushes = 0;
 let gridErrorWindowStartedAt = 0;
+// Bumped every time a rejection clears the key guard. A `pushGrid` that was
+// already awaiting `setGrid` when that happened must NOT re-record its key on
+// resolve — the key it holds describes the geometry tmux just rejected, and
+// recording it would make the repair push short-circuit on the change-guard
+// (silently discarding the repair; see `pushGrid`).
+let gridRejectEpoch = 0;
 
 /** tmux REJECTED a control-mode command (`%error` on the control stream).
  *
@@ -640,6 +663,7 @@ export function gridCommandRejected(): void {
   }
   if (gridErrorPushes >= GRID_ERROR_MAX_PUSHES) return; // storm — stop feeding it
   gridErrorPushes++;
+  gridRejectEpoch++; // invalidate any in-flight push's pending key record
   lastGridKeyByWindow.clear();
   if (gridTimer) clearTimeout(gridTimer);
   gridTimer = window.setTimeout(() => void pushGrid(), 350);
@@ -698,6 +722,7 @@ async function pushGrid(): Promise<void> {
   const countChanged = prevCount !== undefined && n !== prevCount;
   const layout =
     countChanged && !manualLayoutWindows.has(windowId) ? "tiled" : "none";
+  const epoch = gridRejectEpoch;
   try {
     await setGrid(windowId, winCols, winRows, layout);
     // Record the key ONLY after the push lands. The control client may still be
@@ -705,7 +730,13 @@ async function pushGrid(): Promise<void> {
     // If we recorded the key before awaiting (the old bug), the change-guard
     // above would then block every retry at this same size — the window stayed
     // stuck at its tmux birth size (200×50) until the user happened to resize.
-    lastGridKeyByWindow.set(windowId, key);
+    //
+    // …and only if no `%error` arrived while we were awaiting: `gridCommandRejected`
+    // cleared the guard precisely so the scheduled repair push would run, and
+    // re-recording this (rejected) key here would make that repair a no-op.
+    if (epoch === gridRejectEpoch) {
+      lastGridKeyByWindow.set(windowId, key);
+    }
     lastPaneCountByWindow.set(windowId, n);
   } catch {
     // Not attached yet (or transient). No fresh report may follow once the UI
@@ -1058,6 +1089,30 @@ export function openSettings(): void {
 export function closeSettings(): void {
   setSettingsOpen(false);
 }
+// ── Keep-awake lever ─────────────────────────────────────────────────────────
+
+const [awake, setAwake] = createSignal<AwakePayload>({ on: false, lidProof: false });
+export { awake };
+
+/** Sync the footer toggle with the backend's caffeinate child, which survives
+ *  a webview reload — the toggle must ask, not assume off. */
+export async function syncAwake(): Promise<void> {
+  try {
+    setAwake(await awakeGet());
+  } catch {
+    // cosmetic only — leave the toggle showing off
+  }
+}
+
+/** Flip the keep-awake lever; render whatever state the backend reports. */
+export async function toggleAwake(): Promise<void> {
+  try {
+    setAwake(await awakeSet(!awake().on));
+  } catch (e) {
+    setStore("error", `keep-awake failed: ${String(e)}`);
+  }
+}
+
 export function toggleSettings(): void {
   if (settingsOpen()) closeSettings();
   else openSettings();
@@ -1081,18 +1136,28 @@ const [teamBoard, setTeamBoard] = createStore<TeamBoardStore>({
 const [teamBoardOpen, setTeamBoardOpen] = createSignal(false);
 export { teamBoard, teamBoardOpen };
 
-/** Reload the live team runs from native session files. */
-export async function loadTeamRunsNow(): Promise<void> {
-  setTeamBoard("loading", true);
-  setTeamBoard("error", null);
+/** Reload the live team runs from native session files.
+ *
+ *  `quiet` = a speculative background refresh (topology-triggered): it never
+ *  touches `loading`/`error`, so an open board keeps showing its current rows
+ *  instead of flickering through "loading…", and a transient read failure does
+ *  not wipe them. User-initiated reloads (open, ↻, cleanup) stay loud. */
+export async function loadTeamRunsNow(opts?: { quiet?: boolean }): Promise<void> {
+  const quiet = opts?.quiet === true;
+  if (!quiet) {
+    setTeamBoard("loading", true);
+    setTeamBoard("error", null);
+  }
   try {
     const runs = await loadTeamRuns();
     setTeamBoard("runs", runs);
   } catch (e) {
-    setTeamBoard("error", String(e));
-    setTeamBoard("runs", []);
+    if (!quiet) {
+      setTeamBoard("error", String(e));
+      setTeamBoard("runs", []);
+    }
   } finally {
-    setTeamBoard("loading", false);
+    if (!quiet) setTeamBoard("loading", false);
   }
 }
 
@@ -1465,13 +1530,37 @@ export function cancelToggle(): void {
 
 const NAME_OK = /^[A-Za-z0-9._-]+$/;
 
+/** True when the pane's foreground command is claude — i.e. typing into it
+ *  would land in a live agent's prompt, not a shell. Fails CLOSED (treats an
+ *  unreadable pane as "running claude") so a lost query can never cause a
+ *  stray launch line to be typed into an agent. */
+async function paneRunsClaude(paneId: string): Promise<boolean> {
+  try {
+    return (await paneCommand(paneId)).toLowerCase().includes("claude");
+  } catch {
+    return true;
+  }
+}
+
 /** A1 — the pane toolbar's zero-friction "Launch CC" path: launch straight
  *  into an existing pane (no dialog). Surfaces a failure the same way every
  *  other launch path here does — `setStore("error", ...)` — so a bad cwd or
  *  backend error is visible, not indistinguishable from success. */
 export async function directLaunchCc(paneId: string, cwd: string): Promise<void> {
+  // An IDLE pane can be an idle CLAUDE SESSION, not a fresh shell — launching
+  // there would type `cd … && claude` + CR straight into the agent's prompt.
+  if (await paneRunsClaude(paneId)) {
+    setStore(
+      "error",
+      `pane ${paneId} is already running claude — use ⌥-click / ⌄ for launch options`,
+    );
+    return;
+  }
+  // An empty cwd would emit `cd '' && … claude`: zsh errors on the cd and the
+  // `&&` swallows the launch, while run_line_in_pane still reports Ok.
+  const dir = cwd.trim() || "~";
   try {
-    await launchCc(paneId, cwd);
+    await launchCc(paneId, dir);
   } catch (e) {
     setStore("error", `launch failed: ${String(e)}`);
   }

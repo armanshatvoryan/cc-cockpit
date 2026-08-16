@@ -4,7 +4,7 @@
 // XtermHost is keyed by paneId at the call site (PaneGrid) so it stays mounted
 // for the pane's whole life and is never re-created on focus changes.
 
-import { createSignal, Show, type Component } from "solid-js";
+import { createMemo, createSignal, Show, type Component } from "solid-js";
 import type { LayoutRect, PaneInfo } from "../ipc";
 import { interruptPane } from "../ipc";
 import {
@@ -34,7 +34,8 @@ export const Pane: Component<{
     !props.pane.dead &&
     (props.pane.status === "IDLE" || props.pane.status === "UNKNOWN");
   // A2 — team-board member name (falls back to pane title / id) + tooltip.
-  const label = () => paneLabel(props.pane);
+  // Memoized: read twice per render (text + tooltip) and it joins run rows.
+  const label = createMemo(() => paneLabel(props.pane));
 
   return (
     <div
@@ -53,7 +54,7 @@ export const Pane: Component<{
         <Show when={canLaunch()}>
           <button
             class="tb-btn"
-            title="Launch Claude here (⌥-click for options)"
+            title="Launch Claude here (⌥-click for options; refuses a pane already running claude)"
             onClick={(e) => {
               e.stopPropagation();
               if (e.altKey) {

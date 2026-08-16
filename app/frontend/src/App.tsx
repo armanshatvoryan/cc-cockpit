@@ -20,6 +20,8 @@ import {
   settingsOpen,
   usage,
   usageAgeSec,
+  awake,
+  toggleAwake,
 } from "./store";
 import type { UsageWindow } from "./ipc";
 import { installKeyboard } from "./keyboard";
@@ -109,9 +111,9 @@ const UsageWindowBlock: Component<{ label: string; w: UsageWindow }> = (props) =
 );
 
 const UsageFooterSegment: Component = () => (
-  <div class="footer-usage" tabIndex={0}>
+  <div class="footer-usage" tabIndex={0} aria-describedby="usage-tt">
     <span class="footer-item mono">{usageSegmentText()}</span>
-    <div class="usage-tooltip" role="tooltip">
+    <div class="usage-tooltip" role="tooltip" id="usage-tt">
       <div class="usage-tt-row">
         <span>session</span>
         <span class="mono">{store.session || "—"}</span>
@@ -210,6 +212,20 @@ export const App: Component = () => {
                   </Show>
                 </button>
               </Show>
+              <button
+                class="awake-toggle"
+                classList={{ on: awake().on }}
+                title={
+                  awake().on
+                    ? awake().lidProof
+                      ? "Keeping the Mac awake, lid close included — click to allow sleep again"
+                      : "Keeping the Mac awake while idle — lid close still sleeps (root helper not installed: sudo app/scripts/install-sleeplever.sh)"
+                    : "Keep the Mac awake (blocks system sleep; display may still sleep)"
+                }
+                onClick={() => void toggleAwake()}
+              >
+                ☕ {awake().on ? (awake().lidProof ? "awake · lid-proof" : "awake · idle-only") : "sleep ok"}
+              </button>
               <span class="footer-item">
                 {store.tabs.length} tab{store.tabs.length === 1 ? "" : "s"} ·{" "}
                 {reachablePanes().length} pane
