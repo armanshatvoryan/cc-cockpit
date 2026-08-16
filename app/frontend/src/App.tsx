@@ -14,6 +14,8 @@ import {
   sidebarVisible,
   ftInitHome,
   settingsOpen,
+  awakeOn,
+  toggleAwake,
 } from "./store";
 import { installKeyboard } from "./keyboard";
 import { TabBar } from "./components/TabBar";
@@ -72,6 +74,18 @@ export const App: Component = () => {
                 socket <span class="mono">{store.socket || "—"}</span>
               </span>
               <span class="footer-spacer" />
+              <button
+                class="awake-toggle"
+                classList={{ on: awakeOn() }}
+                title={
+                  awakeOn()
+                    ? "Keeping the Mac awake — click to allow sleep again"
+                    : "Keep the Mac awake (blocks system sleep; display may still sleep)"
+                }
+                onClick={() => void toggleAwake()}
+              >
+                ☕ {awakeOn() ? "awake" : "sleep ok"}
+              </button>
               <span class="footer-item">
                 {store.tabs.length} tab{store.tabs.length === 1 ? "" : "s"} ·{" "}
                 {store.panes.length} pane{store.panes.length === 1 ? "" : "s"}

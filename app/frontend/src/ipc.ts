@@ -586,6 +586,18 @@ export function effectiveDefaultCwd(): Promise<string> {
   return invoke<string>("effective_default_cwd");
 }
 
+/** Keep-awake lever: block macOS system sleep (caffeinate-backed). Resolves to
+ *  the ACTUAL state afterwards — the toggle renders that, not the request. */
+export function awakeSet(on: boolean): Promise<boolean> {
+  return invoke<boolean>("awake_set", { on });
+}
+
+/** Current keep-awake state. The backend child survives a webview reload, so
+ *  the footer toggle asks on boot instead of assuming off. */
+export function awakeGet(): Promise<boolean> {
+  return invoke<boolean>("awake_get");
+}
+
 /** One sibling project in the repo-picker dropdown. */
 export interface RepoEntry {
   name: string;

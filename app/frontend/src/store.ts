@@ -47,6 +47,8 @@ import {
   gitStatusSnapshot,
   saveLayout,
   loadLayout,
+  awakeSet,
+  awakeGet,
   onPaneStatus,
   onPaneTopology,
   onCockpitReconnected,
@@ -322,6 +324,8 @@ export async function bootCockpit(): Promise<void> {
   await restoreLayout();
   // dev#2 — paint the active tab's git badge immediately, then poll it.
   void refreshActiveGitStatus();
+  // keep-awake toggle: pick up a caffeinate child from before a webview reload.
+  void syncAwake();
 
   // pane:status — patch the matching pane's status badge in place.
   const unStatus = await onPaneStatus((p) => {
@@ -900,6 +904,30 @@ export function openSettings(): void {
 export function closeSettings(): void {
   setSettingsOpen(false);
 }
+// ── Keep-awake lever ─────────────────────────────────────────────────────────
+
+const [awakeOn, setAwakeOn] = createSignal(false);
+export { awakeOn };
+
+/** Sync the footer toggle with the backend's caffeinate child, which survives
+ *  a webview reload — the toggle must ask, not assume off. */
+export async function syncAwake(): Promise<void> {
+  try {
+    setAwakeOn(await awakeGet());
+  } catch {
+    // cosmetic only — leave the toggle showing off
+  }
+}
+
+/** Flip the keep-awake lever; render whatever state the backend reports. */
+export async function toggleAwake(): Promise<void> {
+  try {
+    setAwakeOn(await awakeSet(!awakeOn()));
+  } catch (e) {
+    setStore("error", `keep-awake failed: ${String(e)}`);
+  }
+}
+
 export function toggleSettings(): void {
   if (settingsOpen()) closeSettings();
   else openSettings();
