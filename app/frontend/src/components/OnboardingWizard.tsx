@@ -299,6 +299,7 @@ export const OnboardingWizard: Component = () => {
             <div class="onb-key"><kbd>⌘D</kbd> split pane</div>
             <div class="onb-key"><kbd>⌘1–9</kbd> switch tabs</div>
             <div class="onb-key"><kbd>⌘B</kbd> file tree</div>
+            <div class="onb-key"><kbd>⌘S</kbd> sessions sidebar</div>
             <div class="onb-key"><kbd>⌘I</kbd> inventory</div>
             <div class="onb-key"><kbd>⌘⇧T</kbd> team board</div>
             <div class="onb-key"><kbd>⌘,</kbd> settings</div>
@@ -306,6 +307,13 @@ export const OnboardingWizard: Component = () => {
           <p class="field-hint">
             Every pane shows a status badge — Working / Needs input / Idle /
             Dead — so you can jump straight to the pane that needs you.
+          </p>
+          <p class="field-hint">
+            The footer is the control strip: live token-burn meter on the left;
+            on the right, <b>⇥ N</b> reopens sessions you parked with ⌘S, and
+            <b> ☕ sleep ok</b> toggles keep-awake — it holds the Mac awake
+            (lid-proof once the root helper is installed) so overnight agent
+            runs survive, and shows <i>awake · lid-proof</i> while armed.
           </p>
         </Show>
 
