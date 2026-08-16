@@ -59,11 +59,31 @@ export interface TabInfo {
   paneIds: string[];
 }
 
+/**
+ * One STORED (`_sb:`-prefixed) tmux window — a session parked in the sessions
+ * sidebar instead of the tab bar (D-1). Stored windows are stripped out of
+ * `tabs` by the backend, so TabBar / ⌘1-9 / persist exclude them for free; their
+ * PANES deliberately stay in `panes` (the poller is session-wide) so a hidden
+ * session keeps reporting WORKING / NEEDS_INPUT while parked.
+ */
+export interface StoredSessionInfo {
+  /** tmux window id `@<n>` — the STABLE handle for unstore/kill. */
+  windowId: string;
+  /** tmux window index — display/order only, NEVER a command target. */
+  index: number;
+  /** Window name with the `_sb:` prefix stripped (what the sidebar shows). */
+  label: string;
+  /** Pane ids in the stored window, tmux order. */
+  paneIds: string[];
+}
+
 export interface CockpitState {
   socket: string;
   session: string;
   tabs: TabInfo[];
   panes: PaneInfo[];
+  /** Parked `_sb:` windows (D-1). Never overlaps `tabs`. */
+  stored: StoredSessionInfo[];
 }
 
 // ── Inventory (P2-F1) ────────────────────────────────────────────────────────
@@ -173,6 +193,10 @@ export interface TeamMember {
   model?: string;
   cwd?: string;
   color?: string;
+  /** Raw native `prompt` the teammate was spun up with, if any. */
+  prompt?: string;
+  /** Derived first-sentence summary of `prompt`, trimmed to ~80 chars. */
+  taskSummary?: string;
   isActive: boolean;
   isLead: boolean;
 }
@@ -224,6 +248,12 @@ export interface WarmStartPayload {
   bytesB64: string;
 }
 
+/** `cockpit:cmd-error` payload — the message tmux sent inside the rejected
+ * command's `%begin`/`%error` block. */
+export interface CmdErrorPayload {
+  lines: string[];
+}
+
 // ── Terax tier-1 (git status + disk-persisted layout) ────────────────────────
 // Mirrors `gitstatus.rs` / `persist.rs` DTOs (camelCase serde). See the backend
 // contract: `git_status_snapshot(cwd)`, `save_layout(snapshot)`, `load_layout()`.
@@ -262,6 +292,42 @@ export interface FileEntry {
   path: string;
   /** Directory? Sorts first; expandable. */
   isDir: boolean;
+}
+
+// ── Usage (C-2) — local jsonl token-burn footer ─────────────────────────────
+// Mirrors `usage.rs` camelCase serde DTOs 1:1 (see task-C1-report.md §1 — the
+// authoritative wire contract). `usage_snapshot` / `usage:update` never send
+// snake_case; Tauri's JSON bridge passes these straight through unconverted.
+
+export interface ModelUsage {
+  /** Raw model id, e.g. `claude-opus-5`. */
+  model: string;
+  totalTokens: number;
+  messages: number;
+}
+
+export interface UsageWindow {
+  /** `input + output + cacheCreation + cacheRead`. */
+  totalTokens: number;
+  outputTokens: number;
+  /** Non-cached input only. */
+  inputTokens: number;
+  /** `cacheCreation + cacheRead`. */
+  cacheTokens: number;
+  messages: number;
+  /** Sorted totalTokens desc, ties by model name asc. */
+  byModel: ModelUsage[];
+  /** Trailing-30-min velocity. Byte-identical on `fiveHour` and `week` (it's a
+   *  whole-scan "how hot right now" readout, not a per-window average) — render
+   *  it ONCE, not per window. */
+  tokensPerMin: number;
+}
+
+export interface UsageSnapshot {
+  fiveHour: UsageWindow;
+  week: UsageWindow;
+  computedAtMs: number;
+  scanMs: number;
 }
 
 // ── Event payloads ──────────────────────────────────────────────────────────
@@ -497,6 +563,17 @@ export function warmStart(paneId: string): Promise<WarmStartPayload> {
 }
 
 /**
+ * Visible-grid-only replay with cursor restore, for the post-resize resync
+ * (bug #11, revisit garble). Replays tmux's clean visible grid (= what Ctrl+L
+ * shows) into an xterm whose buffer diverged during a single-shot window
+ * resize. No scrollback — the caller clears the buffer first (escape-level
+ * clear, not `term.reset()`, which would wipe terminal modes).
+ */
+export function warmStartScreen(paneId: string): Promise<WarmStartPayload> {
+  return invoke<WarmStartPayload>("warm_start_screen", { paneId });
+}
+
+/**
  * Per-worktree git status for a cwd (dev#2). Resolves to `null` when `cwd` is not
  * a git repo (the backend returns `Ok(None)`); rejects only if `git` is missing.
  */
@@ -634,6 +711,26 @@ export function onInstallDone(
   return listen<InstallDonePayload>("onboarding:install-done", (e) => handler(e.payload));
 }
 
+/** Keep-awake lever state. `lidProof` = the root helper accepted, so lid close
+ *  is covered too (plain caffeinate assertions never survive clamshell sleep). */
+export interface AwakePayload {
+  on: boolean;
+  lidProof: boolean;
+}
+
+/** Keep-awake lever: block macOS system sleep (caffeinate + root helper when
+ *  installed). Resolves to the ACTUAL state afterwards — the toggle renders
+ *  that, not the request. */
+export function awakeSet(on: boolean): Promise<AwakePayload> {
+  return invoke<AwakePayload>("awake_set", { on });
+}
+
+/** Current keep-awake state. The backend child survives a webview reload, so
+ *  the footer toggle asks on boot instead of assuming off. */
+export function awakeGet(): Promise<AwakePayload> {
+  return invoke<AwakePayload>("awake_get");
+}
+
 /** One sibling project in the repo-picker dropdown. */
 export interface RepoEntry {
   name: string;
@@ -684,6 +781,53 @@ export function breakPane(paneId: string): Promise<string> {
   return invoke<string>("break_pane", { paneId });
 }
 
+// ── Stored sessions (Wave D — the sessions sidebar) ─────────────────────────
+// A stored session is an ordinary tmux window renamed `_sb:<label>`; the backend
+// partitions those out of `tabs` into `stored`. There is deliberately no "kill
+// stored session" command — a stored window carries the same `@<n>` id, so
+// `closeTab` handles it (and inherits its live-pane confirmation).
+
+/**
+ * Park a pane in the sessions sidebar. A pane with siblings is broken out into
+ * its own hidden `_sb:<label>` window; a SOLE pane renames its whole window (the
+ * tab itself becomes the stored session, so the caller must move the UI's active
+ * tab off it — `refreshState` + the reconcile focus repair do that).
+ *
+ * The backend sanitizes `label` (control chars, nested `_sb:`, leading `-`,
+ * clamped to 80 chars) and REJECTS one that sanitizes to empty.
+ */
+export function storePane(paneId: string, label: string): Promise<StoredSessionInfo> {
+  return invoke<StoredSessionInfo>("store_pane", { paneId, label });
+}
+
+/** Un-park a stored window (a rename only — no select-window, so it can't steal
+ *  focus or re-tile). Resolves to the resulting window name. */
+export function unstoreWindow(windowId: string): Promise<string> {
+  return invoke<string>("unstore_window", { windowId });
+}
+
+/** Create a session that is born parked: a detached `_sb:<label>` window (no
+ *  focus steal, no re-tile). Blank/absent `cwd` falls back to the backend's
+ *  default start dir. */
+export function createStoredSession(
+  label: string,
+  cwd?: string,
+): Promise<StoredSessionInfo> {
+  return invoke<StoredSessionInfo>("create_stored_session", {
+    label,
+    cwd: cwd && cwd.trim() ? cwd.trim() : null,
+  });
+}
+
+/**
+ * Last published usage snapshot (C-2). `null` until the first background scan
+ * pass finishes — render `—`, not `0`. Pull-on-boot only: this command never
+ * scans itself, it just hands back whatever the poller last computed.
+ */
+export function usageSnapshot(): Promise<UsageSnapshot | null> {
+  return invoke<UsageSnapshot | null>("usage_snapshot");
+}
+
 // ── Events (Rust -> FE) ───────────────────────────────────────────────────────
 
 export function onPaneData(handler: (p: PaneDataPayload) => void): Promise<UnlistenFn> {
@@ -712,6 +856,19 @@ export function onCockpitReconnected(handler: () => void): Promise<UnlistenFn> {
 }
 
 /**
+ * Fired when tmux REJECTS a control-mode command (`%error`). Control mode has no
+ * per-command reply we await — `set_grid` & friends resolve as soon as the bytes
+ * reach the server's stdin — so without this a rejected sizing command was
+ * invisible: the grid key was recorded as pushed and the change-guard then
+ * blocked every retry, leaving the window silently at the wrong size.
+ */
+export function onCmdError(
+  handler: (p: CmdErrorPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<CmdErrorPayload>("cockpit:cmd-error", (e) => handler(e.payload));
+}
+
+/**
  * Fired when the user hits ⌘W / the window close button. The backend prevents the
  * actual window close; the frontend closes the focused pane (or active tab) so a
  * stray ⌘W never kills the whole cockpit.
@@ -726,4 +883,12 @@ export function onFileTreeChanged(
   handler: (p: FileChangePayload) => void,
 ): Promise<UnlistenFn> {
   return listen<FileChangePayload>("filetree:changed", (e) => handler(e.payload));
+}
+
+/** A usage scan pass finished (immediate on boot, then every 45s). Payload is
+ *  the full fresh `UsageSnapshot` — replace, don't merge. */
+export function onUsageUpdate(
+  handler: (p: UsageSnapshot) => void,
+): Promise<UnlistenFn> {
+  return listen<UsageSnapshot>("usage:update", (e) => handler(e.payload));
 }

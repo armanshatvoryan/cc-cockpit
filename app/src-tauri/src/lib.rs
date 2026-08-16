@@ -12,6 +12,7 @@
 //! The IPC contract this exposes is documented in the final report; command
 //! names + payloads are stable for the frontend to build against.
 
+pub mod awake;
 pub mod filetree;
 pub mod gitstatus;
 pub mod inventory;
@@ -24,6 +25,7 @@ pub mod status;
 pub mod teamruns;
 pub mod templates;
 pub mod tmux;
+pub mod usage;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -33,6 +35,7 @@ use base64::Engine as _;
 use cockpit_engine::{Outbound, TopologyEvent};
 use manager::{
     CloseTabResult, CockpitState, CreateTabResult, SessionManager, SplitPaneResult,
+    StoredSessionInfo,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -47,12 +50,19 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 /// control-mode frame (which floods the IPC bridge and causes UI lag).
 const COALESCE_MS: u64 = 16;
 
+/// Token-burn poll interval. The scan is incremental (unchanged files aren't
+/// read at all), so 45s is cheap in steady state while still feeling live.
+const USAGE_POLL_MS: u64 = 45_000;
+
 /// Managed state: the SessionManager behind a mutex (Tauri commands are sync).
 #[derive(Clone)]
 pub struct AppState {
     pub mgr: Arc<Mutex<SessionManager>>,
     /// Set once the forwarder + poller are running, so re-init doesn't dup them.
     pub started: Arc<Mutex<bool>>,
+    /// Latest token-burn snapshot, published by the usage poller thread. `None`
+    /// until the first (cold) pass completes — the UI shows nothing, not a zero.
+    pub usage: Arc<Mutex<Option<usage::UsageSnapshot>>>,
 }
 
 impl Default for AppState {
@@ -60,6 +70,7 @@ impl Default for AppState {
         Self {
             mgr: Arc::new(Mutex::new(SessionManager::new())),
             started: Arc::new(Mutex::new(false)),
+            usage: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -96,6 +107,14 @@ struct PaneTopologyPayload {
     layout: Option<String>,
 }
 
+/// `cockpit:cmd-error` — tmux rejected a control-mode command (`%error`).
+/// `lines` is the message body tmux sent inside the `%begin`/`%error` block.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CmdErrorPayload {
+    lines: Vec<String>,
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────────
 
 /// Ensure socket + `cockpit-main`, attach the control client, start the event
@@ -116,6 +135,7 @@ fn cockpit_init(app: AppHandle, state: State<'_, AppState>) -> Result<CockpitSta
         let mut started = state.started.lock().unwrap();
         if !*started {
             spawn_status_poller(app.clone(), state.mgr.clone());
+            spawn_usage_poller(app.clone(), state.usage.clone());
             *started = true;
         }
     }
@@ -283,6 +303,21 @@ fn list_state(app: AppHandle, state: State<'_, AppState>) -> Result<CockpitState
 fn warm_start(state: State<'_, AppState>, pane_id: String) -> Result<WarmStartPayload, String> {
     let mgr = state.mgr.lock().unwrap();
     let bytes_b64 = mgr.warm_start(&pane_id)?;
+    Ok(WarmStartPayload { bytes_b64 })
+}
+
+/// Visible-grid-only replay with cursor restore, for the post-resize resync
+/// (bug #11, revisit garble). A single-shot window resize makes the pane's TUI
+/// repaint into an xterm still at its old size; the diverged buffer is repaired
+/// by replaying tmux's clean visible grid (= what Ctrl+L shows) — no scrollback,
+/// no keystroke injection.
+#[tauri::command]
+fn warm_start_screen(
+    state: State<'_, AppState>,
+    pane_id: String,
+) -> Result<WarmStartPayload, String> {
+    let mgr = state.mgr.lock().unwrap();
+    let bytes_b64 = mgr.warm_start_screen(&pane_id)?;
     Ok(WarmStartPayload { bytes_b64 })
 }
 
@@ -470,6 +505,17 @@ fn watch_dirs(app: AppHandle, dirs: Vec<String>) -> Result<(), String> {
     filetree::set_watched(&app, dirs)
 }
 
+/// Token-burn snapshot (Wave C): the last snapshot published by the usage
+/// poller — rolling 5h + 7d token totals scanned out of the local Claude Code
+/// transcripts. `None` until the first (cold) pass finishes, so the footer can
+/// render "—" instead of a misleading zero. Pull-on-boot only; live updates
+/// arrive on the `usage:update` event. Never scans on this call — an IPC path
+/// must not wait on hundreds of MB of disk.
+#[tauri::command]
+fn usage_snapshot(state: State<'_, AppState>) -> Option<usage::UsageSnapshot> {
+    state.usage.lock().ok().and_then(|s| s.clone())
+}
+
 /// "Send pane → new tab" (v1.1): break a pane out into its own new window/tab,
 /// keeping it running. Returns the new window id so the frontend can switch to it.
 #[tauri::command]
@@ -479,6 +525,50 @@ fn break_pane(
     pane_id: String,
 ) -> Result<String, String> {
     with_reconnect(&app, &state, |mgr| mgr.break_pane(&pane_id))
+}
+
+// ── Wave D: stored sessions ──────────────────────────────────────────────────
+//
+// A stored session is a detached tmux window named `_sb:<label>`. tmux remains
+// the only registry: the windows are rediscovered on every `list_state`, so
+// stored sessions survive a cockpit restart. Killing one reuses `close_tab`
+// (they are addressed by the same `@<n>` window id) — no extra command.
+
+/// Store a pane as a hidden session: break it out (or rename its window when
+/// it's the tab's only pane) under the reserved `_sb:` prefix.
+#[tauri::command]
+fn store_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: String,
+    label: String,
+) -> Result<StoredSessionInfo, String> {
+    with_reconnect(&app, &state, |mgr| mgr.store_pane(&pane_id, &label))
+}
+
+/// Bring a stored session back as a normal tab (drop the `_sb:` prefix).
+/// Returns the resulting window name.
+#[tauri::command]
+fn unstore_window(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    window_id: String,
+) -> Result<String, String> {
+    with_reconnect(&app, &state, |mgr| mgr.unstore_window(&window_id))
+}
+
+/// Create a new stored session directly — a detached window, born hidden, so
+/// nothing flashes in the tab bar and the visible grid never re-tiles.
+#[tauri::command]
+fn create_stored_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    label: String,
+    cwd: Option<String>,
+) -> Result<StoredSessionInfo, String> {
+    with_reconnect(&app, &state, |mgr| {
+        mgr.create_stored_session(&label, cwd.as_deref())
+    })
 }
 
 // ── Background tasks ─────────────────────────────────────────────────────────
@@ -517,6 +607,13 @@ fn spawn_forwarder(app: AppHandle, rx: std::sync::mpsc::Receiver<Outbound>) {
                 Ok(Outbound::Topology(t)) => {
                     flush_pending(&app, &mut pending);
                     let _ = app.emit("pane:topology", topology_payload(t));
+                }
+                Ok(Outbound::CommandError { lines }) => {
+                    // Same ordering rule as topology: flush first, so the pane
+                    // output that preceded the rejected command is delivered
+                    // before the error the frontend reacts to.
+                    flush_pending(&app, &mut pending);
+                    let _ = app.emit("cockpit:cmd-error", CmdErrorPayload { lines });
                 }
                 Ok(Outbound::Exit { reason }) => {
                     flush_pending(&app, &mut pending);
@@ -602,6 +699,34 @@ fn topology_payload(t: TopologyEvent) -> PaneTopologyPayload {
             ..base
         },
     }
+}
+
+/// Token-burn poller (Wave C): scan the local Claude Code transcripts, publish
+/// the snapshot into `AppState.usage`, and emit `usage:update`.
+///
+/// Runs on its own thread on purpose. The FIRST pass is the expensive one (~432
+/// MB of in-window transcript on a heavy machine); every later pass reads only
+/// the bytes agents appended since, because the scanner is reused and carries
+/// its per-file cursors. No UI/IPC path ever waits on this — the frontend pulls
+/// the last published snapshot via `usage_snapshot` and is pushed the next one.
+///
+/// If `$HOME` is unset there is nothing to scan, so the thread simply doesn't
+/// start (the meter stays empty rather than reading a wrong root).
+fn spawn_usage_poller(app: AppHandle, slot: Arc<Mutex<Option<usage::UsageSnapshot>>>) {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let mut scanner = usage::UsageScanner::new(&home);
+        loop {
+            let snap = scanner.scan(usage::now_ms());
+            if let Ok(mut s) = slot.lock() {
+                *s = Some(snap.clone());
+            }
+            let _ = app.emit("usage:update", snap);
+            std::thread::sleep(Duration::from_millis(USAGE_POLL_MS));
+        }
+    });
 }
 
 /// ~1Hz status poller: classify changed panes, emit `pane:status` on change.
@@ -750,6 +875,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
         .manage(onboarding::InstallGuard::default())
+        .manage(awake::AwakeState::default())
         .invoke_handler(tauri::generate_handler![
             cockpit_init,
             create_tab,
@@ -766,6 +892,7 @@ pub fn run() {
             interrupt_pane,
             list_state,
             warm_start,
+            warm_start_screen,
             load_inventory,
             toggle_plugin,
             plugin_toggle_preview,
@@ -785,6 +912,10 @@ pub fn run() {
             trash_path,
             watch_dirs,
             break_pane,
+            usage_snapshot,
+            store_pane,
+            unstore_window,
+            create_stored_session,
             persist::save_layout,
             persist::load_layout,
             settings::load_settings,
@@ -794,6 +925,8 @@ pub fn run() {
             onboarding::install_prereq,
             onboarding::cancel_install,
             gitstatus::git_status_snapshot,
+            awake::awake_set,
+            awake::awake_get,
         ])
         .setup(|app| {
             // Must run before the frontend's `cockpit_init` reaches

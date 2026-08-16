@@ -580,6 +580,16 @@ button {
   border-color: var(--danger);
   color: var(--on-accent);
 }
+/* A1 — narrow caret next to "Launch CC" that opens the model/flags dialog
+   (⌥-click on the main button does the same). */
+.tb-caret {
+  width: 15px;
+  padding: 0;
+  margin-left: -4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .pane-body {
   flex: 1 1 auto;
@@ -664,6 +674,91 @@ button {
 .footer-keys {
   font-family: var(--mono);
   color: var(--fg-faint);
+}
+.awake-toggle {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--fg-faint);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.awake-toggle:hover {
+  color: var(--fg-dim);
+}
+.awake-toggle.on {
+  color: var(--accent-fg);
+}
+
+/* ── Usage footer segment (C-2) — compact burn readout + hover tooltip ──────── */
+
+.footer-usage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  outline: none;
+}
+/* Keyboard users get a visible ring in place of the suppressed default outline
+   (the element is a tab stop — WCAG 2.4.7); mouse focus stays unringed. */
+.footer-usage:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+.footer-usage .footer-item {
+  cursor: default;
+}
+.usage-tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 80;
+  width: 260px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-3);
+  box-shadow: var(--shadow-menu);
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  white-space: normal;
+}
+.footer-usage:hover .usage-tooltip,
+.footer-usage:focus-within .usage-tooltip {
+  display: block;
+}
+.usage-tt-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 1.5px 0;
+}
+.usage-tt-head {
+  color: var(--fg);
+  font-weight: 600;
+}
+.usage-tt-faint {
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+.usage-tt-model {
+  padding-left: 8px;
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+.usage-tt-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-tt-divider {
+  height: 1px;
+  margin: 5px 0;
+  background: var(--border);
 }
 
 /* ── Empty state ────────────────────────────────────────────────────────────── */
@@ -2179,4 +2274,179 @@ button {
   border-radius: 4px;
   padding: 1px 6px;
   margin-right: 6px;
+}
+
+/* ── Sessions sidebar (Wave D) ───────────────────────────────────────────────
+ * Docked RIGHT column, mirroring `.ft-panel` on the left: the app body becomes
+ * [file tree | main-col | sessions]. Narrower than the file tree — a row is a
+ * badge + a label, never a path. Toggling it resizes the grid, which re-fits
+ * xterm and re-syncs (same accepted cost as ⌘B). */
+
+.sb-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  width: 220px;
+  min-width: 160px;
+  min-height: 0;
+  background: var(--bg-2);
+  border-left: 1px solid var(--border);
+  user-select: none;
+}
+
+.sb-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.sb-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+}
+.sb-count {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+.sb-spacer {
+  flex: 1 1 auto;
+}
+
+.sb-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.sb-empty {
+  padding: 10px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--fg-faint);
+}
+
+/* A row is three SIBLING buttons: the body (restore) plus the two actions. The
+   body is a real <button> rather than a role="button" wrapper, so the actions
+   are not nested inside it and each keeps native keyboard behaviour. */
+.sb-row {
+  display: flex;
+  align-items: center;
+  padding-right: 6px;
+  border-left: 2px solid transparent;
+}
+.sb-row:hover,
+.sb-row:focus-within {
+  background: var(--bg-hover);
+  border-left-color: var(--focus);
+}
+
+.sb-open {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 4px 5px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+.sb-open:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}
+/* The row badge is a worst-of summary, so it stays compact — the dot carries the
+   state, the word next to it would crowd out the label. */
+.sb-row .status-label {
+  display: none;
+}
+.sb-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Actions reveal on hover/keyboard focus, so a quiet list stays quiet. */
+.sb-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  opacity: 0;
+}
+.sb-row:hover .sb-actions,
+.sb-row:focus-within .sb-actions {
+  opacity: 1;
+}
+.sb-act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.sb-act:hover {
+  background: var(--bg-active);
+  color: var(--fg);
+}
+.sb-act-danger:hover {
+  background: var(--danger-bg-hover);
+  color: var(--danger-fg-strong);
+}
+
+/* Footer chip: the always-visible pointer at the parked set. The dock badge
+   deliberately ignores stored panes (they have no tab to click through to), so
+   this is where a parked NEEDS_INPUT surfaces when the panel is closed. */
+.footer-sessions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-3);
+  color: var(--fg-dim);
+  font: inherit;
+  font-family: var(--mono);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.footer-sessions:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.footer-sessions.attn {
+  border-color: var(--danger-border-soft);
+  color: var(--danger-fg);
+}
+.footer-sessions-attn {
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--danger-solid);
+  color: var(--on-danger-solid);
+  font-size: 9.5px;
+  font-weight: 700;
 }

@@ -42,6 +42,97 @@ fn trim_blank_edges(s: &str) -> String {
     }
 }
 
+/// Build the byte stream that repaints an xterm from a visible-grid capture.
+///
+/// capture-pane joins rows with bare `\n`; xterm is not in convertEol mode, so
+/// rows are rejoined with `\r\n` (a bare LF keeps the column and stairsteps).
+/// The capture is NOT edge-trimmed: after a clear every visible row — blank
+/// ones included — must land on its own grid row or everything below shifts.
+/// `cursor` is tmux's real (x, y) for the pane, re-asserted with a 1-based CUP
+/// so the next differential frame starts from the right cell.
+///
+/// Bug #5 (the void): `capture-pane -p` terminates its LAST row with `\n` too,
+/// so an R-row grid arrives as R rows + R line separators. Replaying all R
+/// separators into an R-row viewport scrolls it one row — the top row is pushed
+/// into scrollback (a phantom history line) and the bottom row is left blank
+/// (the void). Exactly ONE trailing `\n` is stripped: it is a terminator, not a
+/// row. A genuine trailing blank ROW arrives as `\n\n` and survives.
+fn compose_screen_replay(capture: &str, cursor: Option<(u32, u32)>) -> String {
+    let grid = capture.strip_suffix('\n').unwrap_or(capture);
+    let mut buf = grid.replace('\n', "\r\n");
+    if let Some((x, y)) = cursor {
+        buf.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+    }
+    buf
+}
+
+/// Build the mount-time warm-start stream from a FULL-scrollback capture
+/// (`capture-pane -e -S -`) plus the pane's real height and cursor.
+///
+/// The old warm start replayed the whole capture edge-trimmed, with no cursor
+/// and no idea where the viewport started — so the visible grid landed wherever
+/// the write happened to end up (bug #4, warm-start garble). The capture is
+/// ordered history-then-screen, so the split is exact: the LAST `pane_height`
+/// lines ARE the visible grid; everything above is scrollback.
+///
+///   * history → `trim_blank_edges` (drops the fresh-pane padding void) then
+///     `\r\n` join + one terminator so the grid starts on its own row. An
+///     all-blank history contributes nothing.
+///   * grid → `compose_screen_replay` (verbatim rows, H-1 line endings, real
+///     cursor CUP), so the H rows fill the H-row viewport without scrolling it
+///     and the cursor's viewport-relative CUP is correct.
+///
+/// Soft-wrapped history lines still gain a phantom blank row when xterm
+/// re-wraps them — cosmetic, scrollback-only, accepted. The viewport (input
+/// line included) is exact.
+fn compose_warm_start(capture: &str, pane_height: usize, cursor: Option<(u32, u32)>) -> String {
+    let body = capture.strip_suffix('\n').unwrap_or(capture);
+    let lines: Vec<&str> = body.split('\n').collect();
+    let split = lines.len().saturating_sub(pane_height.max(1));
+    let mut out = String::new();
+    if split > 0 {
+        let history = trim_blank_edges(&lines[..split].join("\n"));
+        if !history.is_empty() {
+            out.push_str(&history.replace('\n', "\r\n"));
+            out.push_str("\r\n");
+        }
+    }
+    // The grid slice is handed over in capture-pane's own shape — rows joined
+    // by \n WITH the terminator — because that is what compose_screen_replay
+    // consumes. Re-adding it matters when the last visible row is blank: the
+    // join's trailing \n is then a real separator, not the terminator.
+    let grid = lines[split..].join("\n") + "\n";
+    out.push_str(&compose_screen_replay(&grid, cursor));
+    out
+}
+
+/// Parse the first `n` whitespace-separated u32 fields of a `display-message -p`
+/// reply. Any short / non-numeric / empty reply (older tmux, dead pane) yields
+/// None so the caller can fall back instead of guessing a geometry.
+fn parse_u32_fields(s: &str, n: usize) -> Option<Vec<u32>> {
+    let v: Vec<u32> = s
+        .split_whitespace()
+        .take(n)
+        .map(|f| f.parse::<u32>().ok())
+        .collect::<Option<Vec<u32>>>()?;
+    (v.len() == n).then_some(v)
+}
+
+/// Ask tmux for `n` numeric `#{...}` fields of one pane. Best-effort: a failed
+/// or unparsable query is None, never an error — every caller has a fallback.
+fn pane_numbers(pane_id: &str, format: &str, n: usize) -> Option<Vec<u32>> {
+    tmux::tmux(&["display-message", "-p", "-t", pane_id, format])
+        .ok()
+        .filter(|o| o.ok())
+        .and_then(|o| parse_u32_fields(&o.stdout, n))
+}
+
+/// tmux's real cursor (x, y) for a pane, or None when the query fails (the
+/// replay is still aligned; only the cursor cell is off until the next output).
+fn pane_cursor(pane_id: &str) -> Option<(u32, u32)> {
+    pane_numbers(pane_id, "#{cursor_x} #{cursor_y}", 2).map(|v| (v[0], v[1]))
+}
+
 // ── Snapshot / return DTOs (camelCase for the JS frontend) ───────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,6 +175,22 @@ pub struct TabInfo {
     pub pane_ids: Vec<String>,
 }
 
+/// A **stored session** (Wave D): a detached, hidden tmux window whose name
+/// carries the reserved `STORED_PREFIX`. It is NOT a tab — it never appears in
+/// `CockpitState.tabs` — but its panes keep running and keep reporting status.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredSessionInfo {
+    /// tmux window id `@<n>` — the STABLE handle for unstore/kill.
+    pub window_id: String,
+    /// tmux window index (mutable; display/order only, never a target).
+    pub index: u32,
+    /// User-facing label = window name with `STORED_PREFIX` stripped.
+    pub label: String,
+    /// Pane ids inside the stored window (tmux order).
+    pub pane_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CockpitState {
@@ -91,6 +198,8 @@ pub struct CockpitState {
     pub session: String,
     pub tabs: Vec<TabInfo>,
     pub panes: Vec<PaneInfo>,
+    /// Hidden `_sb:` windows, partitioned out of `tabs`.
+    pub stored: Vec<StoredSessionInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,6 +280,149 @@ pub fn is_server_gone(err: &str) -> bool {
         || e.contains("no current session")
         || e.contains("lost server")
         || e.contains("server exited")
+}
+
+// ── Wave D: stored sessions ("`_sb:`" windows) ───────────────────────────────
+
+/// Reserved window-name prefix that marks a window as a **stored session**:
+/// detached, hidden from the tab bar, still running. tmux stays the single
+/// source of truth — there is NO shadow registry, so stored sessions survive a
+/// cockpit restart and are rediscovered by the normal `list-windows` pass.
+pub const STORED_PREFIX: &str = "_sb:";
+
+/// Longest label we let into a window name. Long enough for a real sentence,
+/// short enough that a pasted blob can't turn `list-windows` into a wall.
+const MAX_LABEL_LEN: usize = 80;
+
+/// Is this tmux window name a stored session?
+pub fn is_stored_name(name: &str) -> bool {
+    name.starts_with(STORED_PREFIX)
+}
+
+/// The user-facing label of a stored window name, or None if it isn't stored.
+pub fn stored_label(name: &str) -> Option<&str> {
+    name.strip_prefix(STORED_PREFIX)
+}
+
+/// Normalise a user-supplied label before it becomes part of a window name.
+///
+///   * `\t` / `\n` / `\r` are DROPPED: `list-windows -F` rows are TAB-delimited
+///     and line-based, so either character would fuse or split a parse row and
+///     hand the frontend a garbage tab.
+///   * `#` is DROPPED: window names are substituted back into `-F` format
+///     strings and tmux RE-EXPANDS them, so a label containing `#{...}` /
+///     `#S` reads back as something else entirely (verified on tmux 3.6b:
+///     `_sb:#{window_id}x#S` reads back as `_sb:@0xt1`). Since part of the
+///     label chain is OSC-set `pane_title` — i.e. attacker-controlled — that
+///     mismatch would both mis-render the sidebar row and let `unstore_window`
+///     persist the EXPANDED text as the real tab name.
+///   * A leading `STORED_PREFIX` (however many times) is stripped, so a label
+///     can never nest into `_sb:_sb:x` — which would unstore to `_sb:x` and
+///     stay invisible forever.
+///   * Leading `-` is stripped so the *unstored* name (the bare label, which
+///     reaches `rename-window -t @n <name>` as its own argv word) can never be
+///     read by tmux as an option.
+///   * Outer whitespace is trimmed, other control chars dropped, and the result
+///     is clamped to `MAX_LABEL_LEN` chars — then trimmed again on the right, so
+///     a clamp landing mid-space can't leave an invisible trailing blank.
+///
+/// May return an empty string — callers reject that rather than storing an
+/// unnamed session.
+pub fn sanitize_label(label: &str) -> String {
+    let mut s: String = label
+        .chars()
+        .filter(|c| !c.is_control() && *c != '#')
+        .collect::<String>()
+        .trim()
+        .to_string();
+    loop {
+        let before = s.len();
+        s = s
+            .trim_start_matches(STORED_PREFIX)
+            .trim_start_matches('-')
+            .trim()
+            .to_string();
+        if s.len() == before {
+            break;
+        }
+    }
+    // Clamping can land mid-space ("a<79 chars> b" -> "a<79 chars> "), and a
+    // trailing space in a window name is invisible-but-real, so re-trim the tail.
+    s.chars()
+        .take(MAX_LABEL_LEN)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
+/// Split a freshly-parsed window list into visible tabs and stored sessions.
+/// Pure — applied to `collect_tabs`' output so every downstream consumer (the
+/// state snapshot, persist, the tab bar) sees stored windows only under
+/// `stored`, never as tabs.
+pub fn partition_stored(tabs: Vec<TabInfo>) -> (Vec<TabInfo>, Vec<StoredSessionInfo>) {
+    let mut visible = Vec::with_capacity(tabs.len());
+    let mut stored = Vec::new();
+    for t in tabs {
+        match stored_label(&t.name) {
+            Some(label) => stored.push(StoredSessionInfo {
+                window_id: t.tmux_window_id,
+                index: t.index,
+                label: label.to_string(),
+                pane_ids: t.pane_ids,
+            }),
+            None => visible.push(t),
+        }
+    }
+    (visible, stored)
+}
+
+/// Parse a `#{window_id} #{window_index}` reply. The window id is VALIDATED
+/// (`@<n>`) before the caller can hand it back to the frontend as a kill/unstore
+/// target — a mangled or empty tmux reply must fail loudly here, not become a
+/// stored entry addressing nothing.
+fn parse_window_id_index(reply: &str) -> Result<(String, u32), String> {
+    let mut it = reply.split_whitespace();
+    let win = it.next().unwrap_or("");
+    if !is_window_id(win) {
+        return Err(format!("tmux returned no usable window id: {reply:?}"));
+    }
+    let index: u32 = it.next().unwrap_or("").parse().unwrap_or(0);
+    Ok((win.to_string(), index))
+}
+
+/// How `store_pane` must reshape tmux for a pane whose window holds `siblings`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreShape {
+    /// >1 pane in the window: break JUST this pane out into its own window.
+    BreakOut,
+    /// The pane is the whole tab: rename the window in place.
+    RenameWindow,
+}
+
+/// Decide the store shape from the pane's OWN window's pane list.
+///
+/// An EMPTY list is an error, never "sole pane". `panes_in_pane_window` drops
+/// every line that isn't a valid `%<n>` — so a C-locale/mangled `list-panes`
+/// reply (the same failure class `parse_window_id_index` guards) yields zero
+/// panes for a window that really has three. Treating that as sole-pane would
+/// rename the WHOLE window: the user stores one pane of a 3-pane tab and all
+/// three get swallowed into a hidden `_sb:` session with `pane_ids: []`. Fail
+/// loudly instead — a store that didn't happen is recoverable, a silently
+/// hidden tab is not.
+pub fn store_shape(siblings: &[String]) -> Result<StoreShape, String> {
+    match siblings.len() {
+        0 => Err("tmux returned no usable panes for that window".to_string()),
+        1 => Ok(StoreShape::RenameWindow),
+        _ => Ok(StoreShape::BreakOut),
+    }
+}
+
+/// The first window that may be ADOPTED as a tab — i.e. the first NON-stored
+/// one. A re-healed session's window list can start with a rediscovered stored
+/// window (they outlive restarts); adopting that would both hand the user a
+/// hidden session as their "new tab" and silently delete it from the sidebar.
+pub fn pick_adoptable_tab(tabs: Vec<TabInfo>) -> Option<TabInfo> {
+    tabs.into_iter().find(|t| !is_stored_name(&t.name))
 }
 
 /// A `~/.claude/agents/*.md` `name` is config-derived; before it reaches a
@@ -300,11 +552,14 @@ impl SessionManager {
     /// Mirrors what boot's `list_state` already does for the bootstrap window.
     /// Best-effort rename when a name is given.
     pub fn adopt_bootstrap_tab(&mut self, name: Option<&str>) -> Result<CreateTabResult, String> {
-        let tab = self
-            .collect_tabs()?
-            .into_iter()
-            .next()
-            .ok_or_else(|| "re-healed session has no window to adopt".to_string())?;
+        // Stored (`_sb:`) windows are NOT adoptable: they survive restarts, so a
+        // re-healed session's first window can be one — adopting it would hand
+        // the user a hidden session as their new tab and drop it from the
+        // sidebar. Fall back to a real `new-window` when everything is stored.
+        let tab = match pick_adoptable_tab(self.collect_tabs()?) {
+            Some(t) => t,
+            None => return self.create_tab(name),
+        };
         if let Some(n) = name {
             if !n.is_empty() {
                 let _ = tmux::tmux(&["rename-window", "-t", &tab.tmux_window_id, n]);
@@ -593,14 +848,169 @@ impl SessionManager {
     /// from tmux. tmux is the source of truth; the in-memory model only caches
     /// last-status for change detection.
     pub fn list_state(&self) -> Result<CockpitState, String> {
-        let tabs = self.collect_tabs()?;
+        // Stored windows are partitioned OUT of `tabs` here, once, so the tab
+        // bar / persist / ⌘1-9 / attention all ignore them for free. Their panes
+        // deliberately stay in `panes`: `poll_statuses` is session-wide, so a
+        // stored session keeps reporting BUSY/DONE while it's hidden.
+        let (tabs, stored) = partition_stored(self.collect_tabs()?);
         let panes = self.collect_panes()?;
         Ok(CockpitState {
             socket: tmux::SOCKET.into(),
             session: SESSION.into(),
             tabs,
             panes,
+            stored,
         })
+    }
+
+    // ── Wave D: stored sessions ──────────────────────────────────────────────
+
+    /// Store a pane as a hidden session labelled `label`.
+    ///
+    /// Two shapes, decided by how many panes the pane's window holds:
+    ///   * **>1 pane** — `break-pane -d -n "_sb:<label>"` moves JUST that pane
+    ///     into its own detached window. `-n` names it in the same command, so
+    ///     the window is never briefly visible under an unprefixed name (a
+    ///     break-then-rename would flash a phantom tab into any `list_state`
+    ///     that lands between the two).
+    ///   * **sole pane** — nothing to break out: rename the window itself, so
+    ///     the whole tab becomes the stored session.
+    pub fn store_pane(&mut self, pane_id: &str, label: &str) -> Result<StoredSessionInfo, String> {
+        if !is_pane_id(pane_id) {
+            return Err(format!("bad pane id {pane_id:?}, want %<n>"));
+        }
+        let label = sanitize_label(label);
+        if label.is_empty() {
+            return Err("a stored session needs a label".into());
+        }
+        let name = format!("{STORED_PREFIX}{label}");
+
+        let siblings = self.panes_in_pane_window(pane_id)?;
+        if store_shape(&siblings)? == StoreShape::BreakOut {
+            let out = tmux::tmux_ok(&[
+                "break-pane",
+                "-d",
+                "-s",
+                pane_id,
+                "-n",
+                &name,
+                "-P",
+                "-F",
+                "#{window_id} #{window_index}",
+            ])?;
+            let (window_id, index) = parse_window_id_index(&out.trimmed())?;
+            Ok(StoredSessionInfo {
+                window_id,
+                index,
+                label,
+                pane_ids: vec![pane_id.to_string()],
+            })
+        } else {
+            let out = tmux::tmux_ok(&[
+                "display-message",
+                "-p",
+                "-t",
+                pane_id,
+                "-F",
+                "#{window_id} #{window_index}",
+            ])?;
+            let (window_id, index) = parse_window_id_index(&out.trimmed())?;
+            tmux::tmux_ok(&["rename-window", "-t", &window_id, &name])?;
+            Ok(StoredSessionInfo {
+                window_id,
+                index,
+                label,
+                pane_ids: siblings,
+            })
+        }
+    }
+
+    /// Bring a stored window back as a normal tab: drop the reserved prefix from
+    /// its name. The window (and every process in it) is untouched — only the
+    /// name changes, and the next `list_state` therefore lists it under `tabs`.
+    /// Returns the new window name so the caller can label the tab immediately.
+    pub fn unstore_window(&mut self, window_id: &str) -> Result<String, String> {
+        if !is_window_id(window_id) {
+            return Err(format!("bad window id {window_id:?}, want @<n>"));
+        }
+        let out = tmux::tmux_ok(&[
+            "display-message",
+            "-p",
+            "-t",
+            window_id,
+            "-F",
+            "#{window_name}",
+        ])?;
+        let current = out.trimmed();
+        let label = sanitize_label(stored_label(&current).unwrap_or(&current));
+        // A stored window named exactly `_sb:` (or `_sb:---`) has no label left
+        // after sanitising; give it a real name rather than renaming to "" —
+        // tmux would take the empty argv word and the tab would render nameless.
+        let name = if label.is_empty() {
+            "session".to_string()
+        } else {
+            label
+        };
+        tmux::tmux_ok(&["rename-window", "-t", window_id, &name])?;
+        Ok(name)
+    }
+
+    /// Create a brand new stored session: a detached window born hidden.
+    ///
+    /// `new-window -d` means it never steals focus and never resizes the visible
+    /// grid, so nothing flashes in the UI — the session simply appears in the
+    /// sidebar. `cwd` defaults to the configured start directory when absent.
+    pub fn create_stored_session(
+        &mut self,
+        label: &str,
+        cwd: Option<&str>,
+    ) -> Result<StoredSessionInfo, String> {
+        let label = sanitize_label(label);
+        if label.is_empty() {
+            return Err("a stored session needs a label".into());
+        }
+        let name = format!("{STORED_PREFIX}{label}");
+        let cwd = cwd
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(tmux::default_cwd);
+        let out = tmux::tmux_ok(&[
+            "new-window",
+            "-d",
+            "-t",
+            &format!("{SESSION}:"),
+            "-n",
+            &name,
+            "-c",
+            &cwd,
+            "-P",
+            "-F",
+            "#{window_id} #{window_index} #{pane_id}",
+        ])?;
+        let line = out.trimmed();
+        let (window_id, index) = parse_window_id_index(&line)?;
+        let pane = line.split_whitespace().nth(2).unwrap_or("").to_string();
+        let pane_ids = if is_pane_id(&pane) { vec![pane] } else { vec![] };
+        Ok(StoredSessionInfo {
+            window_id,
+            index,
+            label,
+            pane_ids,
+        })
+    }
+
+    /// Every pane id in the window that owns `pane_id` (tmux lists the whole
+    /// window for a pane target). Used to decide break-out vs rename-in-place.
+    fn panes_in_pane_window(&self, pane_id: &str) -> Result<Vec<String>, String> {
+        let out = tmux::tmux_ok(&["list-panes", "-t", pane_id, "-F", "#{pane_id}"])?;
+        Ok(out
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|p| is_pane_id(p))
+            .map(str::to_string)
+            .collect())
     }
 
     fn collect_tabs(&self) -> Result<Vec<TabInfo>, String> {
@@ -831,6 +1241,12 @@ impl SessionManager {
     /// window close+reopen) would otherwise paint blank — this replays whatever
     /// is already on screen. `-S -` includes the whole scrollback history.
     ///
+    /// The capture is split at the pane's real height (`compose_warm_start`) so
+    /// the visible grid is replayed grid-exactly with tmux's cursor, instead of
+    /// landing wherever the scrollback write happened to end (bug #4). If the
+    /// geometry query fails we fall back to the old edge-trimmed whole-capture
+    /// replay — approximate, but never blank.
+    ///
     /// Distinct from `capture_pane` (the poller's plain, bounded capture used for
     /// status classification): warm-start is escape-aware and unbounded.
     pub fn warm_start(&self, pane_id: &str) -> Result<String, String> {
@@ -843,11 +1259,35 @@ impl SessionManager {
             "-t",
             pane_id,
         ])?;
-        if out.ok() {
-            Ok(B64.encode(trim_blank_edges(&out.stdout).as_bytes()))
-        } else {
-            Err(out.stderr.trim().to_string())
+        if !out.ok() {
+            return Err(out.stderr.trim().to_string());
         }
+        // One query for both halves of the split: height picks the viewport,
+        // cursor re-asserts the caret inside it.
+        let replay = match pane_numbers(pane_id, "#{pane_height} #{cursor_x} #{cursor_y}", 3) {
+            Some(v) => compose_warm_start(&out.stdout, v[0] as usize, Some((v[1], v[2]))),
+            None => trim_blank_edges(&out.stdout).replace('\n', "\r\n"),
+        };
+        Ok(B64.encode(replay.as_bytes()))
+    }
+
+    /// Like `warm_start` but the VISIBLE grid ONLY (no `-S -`, no scrollback),
+    /// verbatim (no edge-trim) and with tmux's real cursor position re-asserted.
+    /// Used by the post-resize resync (bug #11, revisit garble): a single-shot
+    /// `resize-window` at tab switch makes the pane's TUI repaint into an xterm
+    /// that is still at its OLD size (`term.resize` lags via the debounced
+    /// %layout-change → refreshState round-trip), so the xterm buffer diverges
+    /// from tmux's grid and — for a differential renderer like Claude Code —
+    /// stays diverged until a full repaint. tmux's own grid is clean (= what
+    /// Ctrl+L shows); this replays exactly that, without keystroke injection.
+    pub fn warm_start_screen(&self, pane_id: &str) -> Result<String, String> {
+        let out = tmux::tmux(&["capture-pane", "-p", "-e", "-t", pane_id])?;
+        if !out.ok() {
+            return Err(out.stderr.trim().to_string());
+        }
+        // Best-effort cursor: a failed query just skips the CUP.
+        let cursor = pane_cursor(pane_id);
+        Ok(B64.encode(compose_screen_replay(&out.stdout, cursor).as_bytes()))
     }
 
     /// Tear down: detach the control client, then kill the cockpit session on the
@@ -986,6 +1426,306 @@ mod tests {
     fn trim_blank_edges_all_blank_is_empty() {
         assert_eq!(trim_blank_edges("\n\n\n"), "");
         assert_eq!(trim_blank_edges("\x1b[0m\n  \n"), "");
+    }
+
+    #[test]
+    fn compose_screen_replay_converts_lf_and_restores_cursor() {
+        // capture-pane joins rows with bare \n; xterm has no convertEol, so a
+        // bare LF would stairstep (next row starts at the previous row's end
+        // column). Rows must be rejoined with \r\n. capture-pane's own trailing
+        // \n is NOT a row separator — it is dropped (bug #5, the void). The
+        // cursor lands wherever the write ends, so tmux's real cursor position
+        // is re-asserted with a 1-based CUP.
+        let out = compose_screen_replay("a\nb\n", Some((3, 1)));
+        assert_eq!(out, "a\r\nb\x1b[2;4H");
+    }
+
+    #[test]
+    fn compose_screen_replay_keeps_leading_blank_rows() {
+        // The visible grid is replayed VERBATIM after a clear: a blank top row
+        // is a real grid row (e.g. a TUI's margin) — trimming it would shift
+        // every subsequent row up and misalign the next differential frame.
+        // (trim_blank_edges is for the scrollback warm_start only.)
+        let out = compose_screen_replay("\n\nprompt %\n", None);
+        assert_eq!(out, "\r\n\r\nprompt %");
+    }
+
+    #[test]
+    fn compose_screen_replay_never_scrolls_full_grid() {
+        // Bug #5 (the void): a full-height grid replayed with R line endings
+        // scrolls the xterm one row — the top row leaves for scrollback and the
+        // bottom row is blank. R rows must produce exactly R-1 line endings.
+        const R: usize = 24;
+        let capture = (0..R).map(|i| format!("row{i}")).collect::<Vec<_>>().join("\n") + "\n";
+        let out = compose_screen_replay(&capture, None);
+        assert_eq!(out.matches("\r\n").count(), R - 1);
+        assert!(!out.ends_with('\n'));
+        assert!(out.starts_with("row0\r\n"));
+        assert!(out.ends_with("row23"));
+    }
+
+    #[test]
+    fn compose_screen_replay_without_trailing_newline_is_unchanged() {
+        // Only ONE trailing \n is stripped, and only if present: a capture that
+        // already ends on its last row keeps every row.
+        let out = compose_screen_replay("a\nb", Some((0, 0)));
+        assert_eq!(out, "a\r\nb\x1b[1;1H");
+        // Two trailing newlines = one real trailing blank row + the separator.
+        let out = compose_screen_replay("a\nb\n\n", None);
+        assert_eq!(out, "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn compose_warm_start_splits_history_and_grid() {
+        // 5 captured lines, pane_height 3 -> h1,h2 are scrollback history and
+        // g1,g2,g3 are the visible grid. History is joined with \r\n and
+        // terminated so the grid starts on its own row; the grid goes through
+        // compose_screen_replay (no trailing newline) with the real cursor.
+        let capture = "h1\nh2\ng1\ng2\ng3\n";
+        let out = compose_warm_start(capture, 3, Some((2, 2)));
+        assert_eq!(out, "h1\r\nh2\r\ng1\r\ng2\r\ng3\x1b[3;3H");
+    }
+
+    #[test]
+    fn compose_warm_start_short_capture_is_all_grid() {
+        // Fewer captured lines than the pane is tall (fresh pane, no history):
+        // everything is grid, nothing is trimmed, no history terminator.
+        let out = compose_warm_start("a\nb\n", 24, Some((1, 1)));
+        assert_eq!(out, "a\r\nb\x1b[2;2H");
+        // Exactly pane_height lines -> still all grid.
+        let out = compose_warm_start("a\nb\nc\n", 3, None);
+        assert_eq!(out, "a\r\nb\r\nc");
+    }
+
+    #[test]
+    fn compose_warm_start_trims_history_blanks_keeps_grid_blanks() {
+        // History edge blanks are the fresh-pane padding void — trimmed.
+        // Grid blanks are real rows of the viewport — kept verbatim, including
+        // a leading blank row, or every row below shifts up.
+        let capture = "\n\nreal history\n\n\n\ntop\n\nbottom\n";
+        let out = compose_warm_start(capture, 4, None);
+        assert_eq!(out, "real history\r\n\r\ntop\r\n\r\nbottom");
+        // An all-blank history contributes nothing at all (no stray newline).
+        let out = compose_warm_start("\n\n\ngrid\n", 1, None);
+        assert_eq!(out, "grid");
+    }
+
+    #[test]
+    fn compose_warm_start_never_scrolls() {
+        // The grid half must emit exactly H-1 line endings so the H visible
+        // rows fill the H-row viewport without scrolling it (bug #5 again) —
+        // INCLUDING the blank rows below the prompt, which are real viewport
+        // rows. Only the history's edges may be trimmed; treating the whole
+        // capture as one blob (the old warm start) eats those grid blanks and
+        // the prompt lands H-2 rows too low.
+        const H: usize = 24;
+        const GRID_BLANKS: usize = 22; // fresh-ish pane: prompt + padding
+        let mut capture = String::from("h0\nh1\n\n\n\n\n"); // 6 history rows, 4 blank
+        capture.push_str("g0\ng1"); // first 2 of the H grid rows
+        capture.push_str(&"\n".repeat(GRID_BLANKS)); // GRID_BLANKS blank rows
+        capture.push('\n'); // capture-pane's terminator
+        let out = compose_warm_start(&capture, H, None);
+        // 2 kept history rows (1 separator) + 1 terminator + (H-1) grid rows.
+        assert_eq!(out.matches("\r\n").count(), 1 + 1 + H - 1);
+        // History edge blanks gone; grid blanks all present, in order.
+        assert_eq!(
+            out,
+            format!("h0\r\nh1\r\ng0\r\ng1{}", "\r\n".repeat(GRID_BLANKS))
+        );
+    }
+
+    #[test]
+    fn parse_u32_fields_needs_every_field() {
+        assert_eq!(parse_u32_fields("3 7\n", 2), Some(vec![3, 7]));
+        assert_eq!(parse_u32_fields(" 24 0 12 \n", 3), Some(vec![24, 0, 12]));
+        // Short, non-numeric, or empty replies (older tmux, dead pane) -> None,
+        // so the caller falls back instead of guessing.
+        assert_eq!(parse_u32_fields("3", 2), None);
+        assert_eq!(parse_u32_fields("", 1), None);
+        assert_eq!(parse_u32_fields("x y", 2), None);
+        // Extra trailing fields are ignored, not an error.
+        assert_eq!(parse_u32_fields("1 2 3", 2), Some(vec![1, 2]));
+    }
+
+    // ── Wave D: stored sessions (`_sb:` windows) ─────────────────────────────
+
+    fn tab(win: &str, index: u32, name: &str, panes: &[&str]) -> TabInfo {
+        TabInfo {
+            tab_id: tab_id_for_index(index),
+            tmux_window_id: win.into(),
+            index,
+            name: name.into(),
+            layout: "abcd,80x24,0,0,1".into(),
+            geometry: None,
+            pane_ids: panes.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn stored_name_helpers() {
+        assert!(is_stored_name("_sb:deploy"));
+        assert!(is_stored_name("_sb:"));
+        assert!(!is_stored_name("deploy"));
+        assert!(!is_stored_name("sb:deploy"));
+        assert!(!is_stored_name(" _sb:deploy")); // prefix must be at the head
+        assert_eq!(stored_label("_sb:deploy"), Some("deploy"));
+        assert_eq!(stored_label("_sb:"), Some(""));
+        assert_eq!(stored_label("deploy"), None);
+    }
+
+    #[test]
+    fn sanitize_label_strips_delimiters_and_nested_prefix() {
+        // tmux list-windows is TAB-delimited and line-based: a label carrying a
+        // \t or \n would fuse/split a parse row. Both die here.
+        assert_eq!(sanitize_label("deploy\tprod"), "deployprod");
+        assert_eq!(sanitize_label("deploy\r\nprod"), "deployprod");
+        // A label that already looks stored must not nest into `_sb:_sb:x`
+        // (which would unstore into `_sb:x` and stay hidden forever).
+        assert_eq!(sanitize_label("_sb:deploy"), "deploy");
+        assert_eq!(sanitize_label("_sb:_sb:deploy"), "deploy");
+        // Leading dashes would make the unstored window name look like a tmux
+        // flag in `rename-window -t @n <name>`.
+        assert_eq!(sanitize_label("--force"), "force");
+        // Outer whitespace is noise; interior spaces are legitimate.
+        assert_eq!(sanitize_label("  my session  "), "my session");
+        assert_eq!(sanitize_label(""), "");
+        assert_eq!(sanitize_label("\t\n"), "");
+        // Overlong labels are clamped so a window name can't blow up the bar.
+        assert_eq!(sanitize_label(&"x".repeat(200)).chars().count(), 80);
+        // ...and a clamp that lands on a space must not leave a trailing blank.
+        let clamped = sanitize_label(&format!("{} tail", "x".repeat(MAX_LABEL_LEN - 1)));
+        assert_eq!(clamped, "x".repeat(MAX_LABEL_LEN - 1));
+
+        // `#` is tmux's format-expansion sigil. Window names get substituted
+        // back into `-F` strings and RE-EXPANDED, so any surviving `#` would
+        // make the readback differ from what was stored (tmux 3.6b turns
+        // `_sb:#{window_id}x#S` into `_sb:@0xt1`) — and `unstore_window` would
+        // then persist that expansion as the tab name. Part of the label chain
+        // is OSC-set `pane_title`, so this input is untrusted.
+        assert_eq!(sanitize_label("#{window_id}x#S"), "{window_id}xS");
+        assert_eq!(sanitize_label("#{session_name}"), "{session_name}");
+        assert_eq!(sanitize_label("###"), "");
+        // A label that is nothing but sigils collapses to empty, which callers
+        // reject rather than storing an unnamed session.
+        assert_eq!(sanitize_label("  ##  "), "");
+    }
+
+    #[test]
+    fn partition_stored_splits_tabs_and_keeps_pane_ids() {
+        let tabs = vec![
+            tab("@0", 0, "work", &["%0", "%1"]),
+            tab("@1", 1, "_sb:deploy", &["%2"]),
+            tab("@2", 2, "notes", &["%3"]),
+            tab("@3", 3, "_sb:my session", &["%4", "%5"]),
+        ];
+        let (visible, stored) = partition_stored(tabs);
+        // Prefixed windows LEAVE tabs entirely — that is what makes TabBar,
+        // persist, ⌘1-9 and tabAttention ignore them with zero frontend work.
+        assert_eq!(
+            visible.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+            vec!["work", "notes"]
+        );
+        assert_eq!(
+            visible
+                .iter()
+                .map(|t| t.tmux_window_id.clone())
+                .collect::<Vec<_>>(),
+            vec!["@0", "@2"]
+        );
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].window_id, "@1");
+        assert_eq!(stored[0].index, 1);
+        assert_eq!(stored[0].label, "deploy"); // prefix stripped for display
+        assert_eq!(stored[0].pane_ids, vec!["%2"]);
+        assert_eq!(stored[1].label, "my session");
+        assert_eq!(stored[1].pane_ids, vec!["%4", "%5"]);
+    }
+
+    #[test]
+    fn partition_stored_is_a_noop_without_stored_windows() {
+        let tabs = vec![tab("@0", 0, "work", &["%0"])];
+        let (visible, stored) = partition_stored(tabs);
+        assert_eq!(visible.len(), 1);
+        assert!(stored.is_empty());
+    }
+
+    #[test]
+    fn stored_session_info_serde_is_camel_case() {
+        // D-2 binds against these exact JSON keys.
+        let info = StoredSessionInfo {
+            window_id: "@7".into(),
+            index: 7,
+            label: "deploy".into(),
+            pane_ids: vec!["%9".into()],
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["windowId"], "@7");
+        assert_eq!(v["index"], 7);
+        assert_eq!(v["label"], "deploy");
+        assert_eq!(v["paneIds"][0], "%9");
+        assert_eq!(v.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn pick_adoptable_tab_skips_stored_windows() {
+        // The re-healed session's first window may be a REDISCOVERED stored
+        // window (they survive restarts). Adopting it would hand the user a
+        // hidden session as their new tab AND yank it out of the sidebar.
+        let tabs = vec![
+            tab("@1", 1, "_sb:deploy", &["%2"]),
+            tab("@2", 2, "work", &["%3"]),
+        ];
+        assert_eq!(
+            pick_adoptable_tab(tabs).map(|t| t.tmux_window_id),
+            Some("@2".into())
+        );
+        // All-stored: nothing to adopt (caller creates a fresh window instead).
+        assert!(pick_adoptable_tab(vec![tab("@1", 1, "_sb:x", &["%2"])]).is_none());
+        assert!(pick_adoptable_tab(vec![]).is_none());
+    }
+
+    #[test]
+    fn store_shape_rejects_an_empty_pane_list() {
+        // The bug: `siblings.len() > 1` sent a ZERO-length list (every line
+        // dropped by the `is_pane_id` filter — the C-locale mangling class) down
+        // the sole-pane branch, which renames the pane's WHOLE window. Storing
+        // one pane of a 3-pane tab would swallow all three into a hidden `_sb:`
+        // session with `pane_ids: []`. Empty must be a loud error.
+        assert!(store_shape(&[]).is_err());
+        assert_eq!(
+            store_shape(&["%1".to_string()]),
+            Ok(StoreShape::RenameWindow)
+        );
+        assert_eq!(
+            store_shape(&["%1".to_string(), "%2".to_string()]),
+            Ok(StoreShape::BreakOut)
+        );
+        assert_eq!(
+            store_shape(&["%1".into(), "%2".into(), "%3".into()]),
+            Ok(StoreShape::BreakOut)
+        );
+    }
+
+    #[test]
+    fn parse_window_id_index_requires_a_real_window_id() {
+        assert_eq!(parse_window_id_index("@3 5"), Ok(("@3".into(), 5)));
+        // Missing index is tolerated (0); a bad/absent id is not — it would
+        // become a stored entry whose unstore/kill targets nothing.
+        assert_eq!(parse_window_id_index("@3"), Ok(("@3".into(), 0)));
+        assert!(parse_window_id_index("").is_err());
+        assert!(parse_window_id_index("3 5").is_err());
+        assert!(parse_window_id_index("@3_5_zsh").is_err()); // C-locale mangling
+    }
+
+    #[test]
+    fn stored_window_name_never_starts_with_a_flag_dash() {
+        // Every argv-bound name we build is prefix-first, so tmux can never see
+        // it as an option — and the unstore side is sanitized too.
+        for raw in ["--force", "-t", "_sb:-x", "\t-x"] {
+            let stored = format!("{STORED_PREFIX}{}", sanitize_label(raw));
+            assert!(stored.starts_with('_'), "{stored:?}");
+            assert!(!sanitize_label(raw).starts_with('-'), "{raw:?}");
+        }
     }
 
     #[test]
