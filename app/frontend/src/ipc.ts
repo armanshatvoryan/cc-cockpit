@@ -173,6 +173,10 @@ export interface TeamMember {
   model?: string;
   cwd?: string;
   color?: string;
+  /** Raw native `prompt` the teammate was spun up with, if any. */
+  prompt?: string;
+  /** Derived first-sentence summary of `prompt`, trimmed to ~80 chars. */
+  taskSummary?: string;
   isActive: boolean;
   isLead: boolean;
 }
@@ -222,6 +226,12 @@ export interface SplitPaneResult {
 
 export interface WarmStartPayload {
   bytesB64: string;
+}
+
+/** `cockpit:cmd-error` payload — the message tmux sent inside the rejected
+ * command's `%begin`/`%error` block. */
+export interface CmdErrorPayload {
+  lines: string[];
 }
 
 // ── Terax tier-1 (git status + disk-persisted layout) ────────────────────────
@@ -622,6 +632,26 @@ export function effectiveDefaultCwd(): Promise<string> {
   return invoke<string>("effective_default_cwd");
 }
 
+/** Keep-awake lever state. `lidProof` = the root helper accepted, so lid close
+ *  is covered too (plain caffeinate assertions never survive clamshell sleep). */
+export interface AwakePayload {
+  on: boolean;
+  lidProof: boolean;
+}
+
+/** Keep-awake lever: block macOS system sleep (caffeinate + root helper when
+ *  installed). Resolves to the ACTUAL state afterwards — the toggle renders
+ *  that, not the request. */
+export function awakeSet(on: boolean): Promise<AwakePayload> {
+  return invoke<AwakePayload>("awake_set", { on });
+}
+
+/** Current keep-awake state. The backend child survives a webview reload, so
+ *  the footer toggle asks on boot instead of assuming off. */
+export function awakeGet(): Promise<AwakePayload> {
+  return invoke<AwakePayload>("awake_get");
+}
+
 /** One sibling project in the repo-picker dropdown. */
 export interface RepoEntry {
   name: string;
@@ -706,6 +736,19 @@ export function onPaneStatus(
  */
 export function onCockpitReconnected(handler: () => void): Promise<UnlistenFn> {
   return listen("cockpit:reconnected", () => handler());
+}
+
+/**
+ * Fired when tmux REJECTS a control-mode command (`%error`). Control mode has no
+ * per-command reply we await — `set_grid` & friends resolve as soon as the bytes
+ * reach the server's stdin — so without this a rejected sizing command was
+ * invisible: the grid key was recorded as pushed and the change-guard then
+ * blocked every retry, leaving the window silently at the wrong size.
+ */
+export function onCmdError(
+  handler: (p: CmdErrorPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<CmdErrorPayload>("cockpit:cmd-error", (e) => handler(e.payload));
 }
 
 /**

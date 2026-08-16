@@ -12,6 +12,7 @@
 //! The IPC contract this exposes is documented in the final report; command
 //! names + payloads are stable for the frontend to build against.
 
+pub mod awake;
 pub mod filetree;
 pub mod gitstatus;
 pub mod inventory;
@@ -102,6 +103,14 @@ struct PaneTopologyPayload {
     pane_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     layout: Option<String>,
+}
+
+/// `cockpit:cmd-error` — tmux rejected a control-mode command (`%error`).
+/// `lines` is the message body tmux sent inside the `%begin`/`%error` block.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CmdErrorPayload {
+    lines: Vec<String>,
 }
 
 // ── Commands ─────────────────────────────────────────────────────────────────
@@ -553,6 +562,13 @@ fn spawn_forwarder(app: AppHandle, rx: std::sync::mpsc::Receiver<Outbound>) {
                     flush_pending(&app, &mut pending);
                     let _ = app.emit("pane:topology", topology_payload(t));
                 }
+                Ok(Outbound::CommandError { lines }) => {
+                    // Same ordering rule as topology: flush first, so the pane
+                    // output that preceded the rejected command is delivered
+                    // before the error the frontend reacts to.
+                    flush_pending(&app, &mut pending);
+                    let _ = app.emit("cockpit:cmd-error", CmdErrorPayload { lines });
+                }
                 Ok(Outbound::Exit { reason }) => {
                     flush_pending(&app, &mut pending);
                     let _ = app.emit(
@@ -812,6 +828,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
+        .manage(awake::AwakeState::default())
         .invoke_handler(tauri::generate_handler![
             cockpit_init,
             create_tab,
@@ -855,6 +872,8 @@ pub fn run() {
             settings::save_settings,
             settings::effective_default_cwd,
             gitstatus::git_status_snapshot,
+            awake::awake_set,
+            awake::awake_get,
         ])
         .setup(|app| {
             // Must run before the frontend's `cockpit_init` reaches

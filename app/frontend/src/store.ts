@@ -47,13 +47,17 @@ import {
   gitStatusSnapshot,
   saveLayout,
   loadLayout,
+  awakeSet,
+  awakeGet,
   onPaneStatus,
   onPaneTopology,
+  onCmdError,
   onCockpitReconnected,
   onCloseRequested,
   onFileTreeChanged,
   usageSnapshot,
   onUsageUpdate,
+  type AwakePayload,
   type CockpitState,
   type PaneInfo,
   type TabInfo,
@@ -61,6 +65,7 @@ import {
   type InventoryType,
   type AuditMatrix,
   type TeamRun,
+  type TeamMember,
   type Roster,
   type Workflow,
   type SpinupPreview,
@@ -340,6 +345,8 @@ export async function bootCockpit(): Promise<void> {
   await restoreLayout();
   // dev#2 — paint the active tab's git badge immediately, then poll it.
   void refreshActiveGitStatus();
+  // keep-awake toggle: pick up a caffeinate child from before a webview reload.
+  void syncAwake();
 
   // pane:status — patch the matching pane's status badge in place.
   const unStatus = await onPaneStatus((p) => {
@@ -361,9 +368,25 @@ export async function bootCockpit(): Promise<void> {
   // DEBOUNCED: a burst of layout-change events (e.g. an initial resize storm)
   // collapses into a single reload instead of hammering list_state().
   let topoTimer: number | undefined;
-  const unTopo = await onPaneTopology(() => {
+  // A2 — a new pane may be a freshly-launched teammate; debounce-reload the
+  // team board so `paneLabel` can resolve its name/task without the user
+  // opening the board. Separate timer/delay from the state reconcile above —
+  // this is a "nice to have eventually", not on the topology critical path.
+  let teamTopoTimer: number | undefined;
+  const unTopo = await onPaneTopology((p) => {
     if (topoTimer) clearTimeout(topoTimer);
     topoTimer = window.setTimeout(() => void refreshState(), 120);
+    // Only a STRUCTURAL change can bring a new teammate pane into existence.
+    // `activePaneChanged` fires on every focus click and `paneModeChanged` on
+    // copy-mode toggles — sweeping ~/.claude/teams off those is pure waste.
+    if (p.kind !== "layoutChange" && p.kind !== "windowAdd") return;
+    if (teamTopoTimer) clearTimeout(teamTopoTimer);
+    // QUIET: this reload is speculative, so it must never flip the board into
+    // its "loading…" fallback — an open board would blank on every new pane.
+    teamTopoTimer = window.setTimeout(
+      () => void loadTeamRunsNow({ quiet: true }),
+      400,
+    );
   });
 
   // cockpit:reconnected — backend re-healed a vanished server. Reload state, then
@@ -374,6 +397,15 @@ export async function bootCockpit(): Promise<void> {
   const unReconnect = await onCockpitReconnected(() => {
     setStore("error", null);
     void refreshState().then(gridServerReset);
+  });
+
+  // cockpit:cmd-error — tmux REJECTED a control-mode command. Log it (it was
+  // silently swallowed before) and re-arm the grid push: the rejected command is
+  // most likely the `set_grid` whose key we already recorded as pushed.
+  const unCmdError = await onCmdError((p) => {
+    const msg = p.lines.join(" ").trim();
+    console.error("tmux rejected a command:", msg || "(no message)");
+    gridCommandRejected();
   });
 
   // cockpit:close-requested — ⌘W / window close button. Close the focused pane
@@ -416,6 +448,7 @@ export async function bootCockpit(): Promise<void> {
     unStatus,
     unTopo,
     unReconnect,
+    unCmdError,
     unCloseReq,
     unFocus,
     unGit,
@@ -530,6 +563,57 @@ export function gridServerReset(): void {
   gridTimer = window.setTimeout(() => void pushGrid(), 500);
 }
 
+// A rejected command (`cockpit:cmd-error`) re-arms the push, but the push may be
+// what tmux is rejecting — clear-and-push on every error would then be a
+// self-feeding loop. So this is a RATE LIMIT: at most GRID_ERROR_MAX_PUSHES
+// re-pushes per GRID_ERROR_WINDOW_MS of wall clock, budget refilled when the
+// window rolls over.
+//
+// It deliberately does NOT reset on a gap between errors: `cmd-error` fires for
+// ANY rejected command, so a recurring unrelated rejection (say every 2s) never
+// leaves a 5s gap — a silence-based reset would burn the budget in one burst and
+// then disarm grid repair permanently, silently reinstating the wrong-size
+// window this whole listener exists to fix.
+const GRID_ERROR_MAX_PUSHES = 3;
+const GRID_ERROR_WINDOW_MS = 5000;
+let gridErrorPushes = 0;
+let gridErrorWindowStartedAt = 0;
+// Bumped every time a rejection clears the key guard. A `pushGrid` that was
+// already awaiting `setGrid` when that happened must NOT re-record its key on
+// resolve — the key it holds describes the geometry tmux just rejected, and
+// recording it would make the repair push short-circuit on the change-guard
+// (silently discarding the repair; see `pushGrid`).
+let gridRejectEpoch = 0;
+
+/** tmux REJECTED a control-mode command (`%error` on the control stream).
+ *
+ * `setGrid` resolves as soon as the command bytes reach the server's stdin, so a
+ * rejected sizing command still recorded its grid key — and the per-window
+ * change-guard in `pushGrid` then swallowed every retry at that size, leaving the
+ * window silently at the WRONG geometry until the user resized by hand. Drop the
+ * key guard and re-push.
+ *
+ * Unlike `gridServerReset` this does NOT clear the pane counts or the
+ * manual-arrangement set: the window ids are still valid, and forgetting them
+ * would re-tile a window the user split by hand. We also can't tell WHICH
+ * command tmux rejected (control mode gives no command echo), so this is
+ * deliberately a cheap idempotent re-push, not a targeted repair. */
+export function gridCommandRejected(): void {
+  const now = Date.now();
+  // Roll the window forward from ITS start, not from the last error, so a
+  // steady error stream still gets its budget back every GRID_ERROR_WINDOW_MS.
+  if (now - gridErrorWindowStartedAt > GRID_ERROR_WINDOW_MS) {
+    gridErrorWindowStartedAt = now;
+    gridErrorPushes = 0;
+  }
+  if (gridErrorPushes >= GRID_ERROR_MAX_PUSHES) return; // storm — stop feeding it
+  gridErrorPushes++;
+  gridRejectEpoch++; // invalidate any in-flight push's pending key record
+  lastGridKeyByWindow.clear();
+  if (gridTimer) clearTimeout(gridTimer);
+  gridTimer = window.setTimeout(() => void pushGrid(), 350);
+}
+
 /** Pane-columns/rows the tab's CURRENT layout occupies (distinct x/y starts),
  * for the chrome budget. Before geometry exists, estimate from the old grid
  * formula so the first push is roughly right; the next layout-change refines
@@ -583,6 +667,7 @@ async function pushGrid(): Promise<void> {
   const countChanged = prevCount !== undefined && n !== prevCount;
   const layout =
     countChanged && !manualLayoutWindows.has(windowId) ? "tiled" : "none";
+  const epoch = gridRejectEpoch;
   try {
     await setGrid(windowId, winCols, winRows, layout);
     // Record the key ONLY after the push lands. The control client may still be
@@ -590,7 +675,13 @@ async function pushGrid(): Promise<void> {
     // If we recorded the key before awaiting (the old bug), the change-guard
     // above would then block every retry at this same size — the window stayed
     // stuck at its tmux birth size (200×50) until the user happened to resize.
-    lastGridKeyByWindow.set(windowId, key);
+    //
+    // …and only if no `%error` arrived while we were awaiting: `gridCommandRejected`
+    // cleared the guard precisely so the scheduled repair push would run, and
+    // re-recording this (rejected) key here would make that repair a no-op.
+    if (epoch === gridRejectEpoch) {
+      lastGridKeyByWindow.set(windowId, key);
+    }
     lastPaneCountByWindow.set(windowId, n);
   } catch {
     // Not attached yet (or transient). No fresh report may follow once the UI
@@ -943,6 +1034,30 @@ export function openSettings(): void {
 export function closeSettings(): void {
   setSettingsOpen(false);
 }
+// ── Keep-awake lever ─────────────────────────────────────────────────────────
+
+const [awake, setAwake] = createSignal<AwakePayload>({ on: false, lidProof: false });
+export { awake };
+
+/** Sync the footer toggle with the backend's caffeinate child, which survives
+ *  a webview reload — the toggle must ask, not assume off. */
+export async function syncAwake(): Promise<void> {
+  try {
+    setAwake(await awakeGet());
+  } catch {
+    // cosmetic only — leave the toggle showing off
+  }
+}
+
+/** Flip the keep-awake lever; render whatever state the backend reports. */
+export async function toggleAwake(): Promise<void> {
+  try {
+    setAwake(await awakeSet(!awake().on));
+  } catch (e) {
+    setStore("error", `keep-awake failed: ${String(e)}`);
+  }
+}
+
 export function toggleSettings(): void {
   if (settingsOpen()) closeSettings();
   else openSettings();
@@ -966,18 +1081,28 @@ const [teamBoard, setTeamBoard] = createStore<TeamBoardStore>({
 const [teamBoardOpen, setTeamBoardOpen] = createSignal(false);
 export { teamBoard, teamBoardOpen };
 
-/** Reload the live team runs from native session files. */
-export async function loadTeamRunsNow(): Promise<void> {
-  setTeamBoard("loading", true);
-  setTeamBoard("error", null);
+/** Reload the live team runs from native session files.
+ *
+ *  `quiet` = a speculative background refresh (topology-triggered): it never
+ *  touches `loading`/`error`, so an open board keeps showing its current rows
+ *  instead of flickering through "loading…", and a transient read failure does
+ *  not wipe them. User-initiated reloads (open, ↻, cleanup) stay loud. */
+export async function loadTeamRunsNow(opts?: { quiet?: boolean }): Promise<void> {
+  const quiet = opts?.quiet === true;
+  if (!quiet) {
+    setTeamBoard("loading", true);
+    setTeamBoard("error", null);
+  }
   try {
     const runs = await loadTeamRuns();
     setTeamBoard("runs", runs);
   } catch (e) {
-    setTeamBoard("error", String(e));
-    setTeamBoard("runs", []);
+    if (!quiet) {
+      setTeamBoard("error", String(e));
+      setTeamBoard("runs", []);
+    }
   } finally {
-    setTeamBoard("loading", false);
+    if (!quiet) setTeamBoard("loading", false);
   }
 }
 
@@ -1335,6 +1460,42 @@ export function cancelToggle(): void {
 // the user adds args + runs it). Plugins/MCP aren't launchable.
 
 const NAME_OK = /^[A-Za-z0-9._-]+$/;
+
+/** True when the pane's foreground command is claude — i.e. typing into it
+ *  would land in a live agent's prompt, not a shell. Fails CLOSED (treats an
+ *  unreadable pane as "running claude") so a lost query can never cause a
+ *  stray launch line to be typed into an agent. */
+async function paneRunsClaude(paneId: string): Promise<boolean> {
+  try {
+    return (await paneCommand(paneId)).toLowerCase().includes("claude");
+  } catch {
+    return true;
+  }
+}
+
+/** A1 — the pane toolbar's zero-friction "Launch CC" path: launch straight
+ *  into an existing pane (no dialog). Surfaces a failure the same way every
+ *  other launch path here does — `setStore("error", ...)` — so a bad cwd or
+ *  backend error is visible, not indistinguishable from success. */
+export async function directLaunchCc(paneId: string, cwd: string): Promise<void> {
+  // An IDLE pane can be an idle CLAUDE SESSION, not a fresh shell — launching
+  // there would type `cd … && claude` + CR straight into the agent's prompt.
+  if (await paneRunsClaude(paneId)) {
+    setStore(
+      "error",
+      `pane ${paneId} is already running claude — use ⌥-click / ⌄ for launch options`,
+    );
+    return;
+  }
+  // An empty cwd would emit `cd '' && … claude`: zsh errors on the cd and the
+  // `&&` swallows the launch, while run_line_in_pane still reports Ok.
+  const dir = cwd.trim() || "~";
+  try {
+    await launchCc(paneId, dir);
+  } catch (e) {
+    setStore("error", `launch failed: ${String(e)}`);
+  }
+}
 
 export async function launchFromInventory(item: InventoryItem): Promise<void> {
   if (item.type !== "skill" && item.type !== "subagent") return;
@@ -1743,20 +1904,42 @@ export async function ftConfirmDelete(): Promise<void> {
 }
 
 // ── Attach to Agent ───────────────────────────────────────────────────────────
-/** Live agent panes for the Attach-to-Agent submenu: team-board members whose
- *  `%N` pane this cockpit currently tracks (deduped). */
-export function ftLiveAgents(): { paneId: string; label: string }[] {
-  const seen = new Set<string>();
-  const out: { paneId: string; label: string }[] = [];
+/** `%N` pane id → the live team-board member occupying it (first match wins;
+ *  a pane belongs to at most one live member in practice). The pane↔member
+ *  join, shared by `ftLiveAgents` (Attach-to-Agent submenu) and `paneLabel`
+ *  (toolbar name). */
+function liveMembersByPane(): Map<string, TeamMember> {
+  const out = new Map<string, TeamMember>();
   for (const run of teamBoard.runs) {
     for (const m of run.members) {
-      if (m.tmuxPaneId && memberPaneIsLive(m.tmuxPaneId) && !seen.has(m.tmuxPaneId)) {
-        seen.add(m.tmuxPaneId);
-        out.push({ paneId: m.tmuxPaneId, label: `${m.name || m.agentId} ${m.tmuxPaneId}` });
+      if (m.tmuxPaneId && memberPaneIsLive(m.tmuxPaneId) && !out.has(m.tmuxPaneId)) {
+        out.set(m.tmuxPaneId, m);
       }
     }
   }
   return out;
+}
+
+/** Live agent panes for the Attach-to-Agent submenu: team-board members whose
+ *  `%N` pane this cockpit currently tracks (deduped). */
+export function ftLiveAgents(): { paneId: string; label: string }[] {
+  return Array.from(liveMembersByPane(), ([paneId, m]) => ({
+    paneId,
+    label: `${m.name || m.agentId} ${paneId}`,
+  }));
+}
+
+/** Best display name for a pane's toolbar: a live team-board member's `name`
+ *  (Claude Code's own OSC title overwrite otherwise yields "general-purpose"
+ *  for every teammate pane), else the pane's own title, else its raw id. The
+ *  tooltip surfaces the member's task summary (if any) plus the pane's cwd. */
+export function paneLabel(pane: PaneInfo): { text: string; tooltip: string } {
+  const member = liveMembersByPane().get(pane.paneId);
+  const text = member?.name || pane.title || pane.paneId;
+  const tooltipParts = [member?.taskSummary, pane.cwd].filter(
+    (p): p is string => !!p,
+  );
+  return { text, tooltip: tooltipParts.join(" — ") || pane.paneId };
 }
 /** Attach a file to a chosen agent: insert its path into that agent's pane.
  *  (insertPathInto detects the claude pane → `@path` mention.) */

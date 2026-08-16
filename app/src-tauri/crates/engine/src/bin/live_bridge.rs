@@ -125,6 +125,9 @@ fn main() {
             Ok(Outbound::Topology(ev)) => {
                 eprintln!("[live-bridge] <- topology: {ev:?}");
             }
+            Ok(Outbound::CommandError { lines }) => {
+                eprintln!("[live-bridge] <- command REJECTED: {}", lines.join(" | "));
+            }
             Ok(Outbound::Exit { reason }) => {
                 eprintln!("[live-bridge] <- control client exit: {reason:?}");
                 break;
