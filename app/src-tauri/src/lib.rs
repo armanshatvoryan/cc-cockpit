@@ -34,6 +34,7 @@ use base64::Engine as _;
 use cockpit_engine::{Outbound, TopologyEvent};
 use manager::{
     CloseTabResult, CockpitState, CreateTabResult, SessionManager, SplitPaneResult,
+    StoredSessionInfo,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -525,6 +526,50 @@ fn break_pane(
     with_reconnect(&app, &state, |mgr| mgr.break_pane(&pane_id))
 }
 
+// ── Wave D: stored sessions ──────────────────────────────────────────────────
+//
+// A stored session is a detached tmux window named `_sb:<label>`. tmux remains
+// the only registry: the windows are rediscovered on every `list_state`, so
+// stored sessions survive a cockpit restart. Killing one reuses `close_tab`
+// (they are addressed by the same `@<n>` window id) — no extra command.
+
+/// Store a pane as a hidden session: break it out (or rename its window when
+/// it's the tab's only pane) under the reserved `_sb:` prefix.
+#[tauri::command]
+fn store_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: String,
+    label: String,
+) -> Result<StoredSessionInfo, String> {
+    with_reconnect(&app, &state, |mgr| mgr.store_pane(&pane_id, &label))
+}
+
+/// Bring a stored session back as a normal tab (drop the `_sb:` prefix).
+/// Returns the resulting window name.
+#[tauri::command]
+fn unstore_window(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    window_id: String,
+) -> Result<String, String> {
+    with_reconnect(&app, &state, |mgr| mgr.unstore_window(&window_id))
+}
+
+/// Create a new stored session directly — a detached window, born hidden, so
+/// nothing flashes in the tab bar and the visible grid never re-tiles.
+#[tauri::command]
+fn create_stored_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    label: String,
+    cwd: Option<String>,
+) -> Result<StoredSessionInfo, String> {
+    with_reconnect(&app, &state, |mgr| {
+        mgr.create_stored_session(&label, cwd.as_deref())
+    })
+}
+
 // ── Background tasks ─────────────────────────────────────────────────────────
 
 /// Forward engine `Outbound` -> Tauri events, with output coalescing.
@@ -866,6 +911,9 @@ pub fn run() {
             watch_dirs,
             break_pane,
             usage_snapshot,
+            store_pane,
+            unstore_window,
+            create_stored_session,
             persist::save_layout,
             persist::load_layout,
             settings::load_settings,

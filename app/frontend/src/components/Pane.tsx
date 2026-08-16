@@ -12,6 +12,7 @@ import {
   doClosePane,
   activePanes,
   sendPaneToNewTab,
+  sendPaneToSidebar,
   paneLabel,
   directLaunchCc,
 } from "../store";
@@ -102,6 +103,20 @@ export const Pane: Component<{
             ⤴
           </button>
         </Show>
+
+        {/* Park in the sessions sidebar. NOT gated on pane count: a sole pane is
+            exactly the case you want parked (its whole tab becomes the stored
+            session), so the button is always available. */}
+        <button
+          class="tb-btn"
+          title="Send pane to the sessions sidebar (keeps running)"
+          onClick={(e) => {
+            e.stopPropagation();
+            void sendPaneToSidebar(props.pane.paneId);
+          }}
+        >
+          ⇥
+        </button>
 
         <button
           class="tb-btn tb-danger"

@@ -59,11 +59,31 @@ export interface TabInfo {
   paneIds: string[];
 }
 
+/**
+ * One STORED (`_sb:`-prefixed) tmux window — a session parked in the sessions
+ * sidebar instead of the tab bar (D-1). Stored windows are stripped out of
+ * `tabs` by the backend, so TabBar / ⌘1-9 / persist exclude them for free; their
+ * PANES deliberately stay in `panes` (the poller is session-wide) so a hidden
+ * session keeps reporting WORKING / NEEDS_INPUT while parked.
+ */
+export interface StoredSessionInfo {
+  /** tmux window id `@<n>` — the STABLE handle for unstore/kill. */
+  windowId: string;
+  /** tmux window index — display/order only, NEVER a command target. */
+  index: number;
+  /** Window name with the `_sb:` prefix stripped (what the sidebar shows). */
+  label: string;
+  /** Pane ids in the stored window, tmux order. */
+  paneIds: string[];
+}
+
 export interface CockpitState {
   socket: string;
   session: string;
   tabs: TabInfo[];
   panes: PaneInfo[];
+  /** Parked `_sb:` windows (D-1). Never overlaps `tabs`. */
+  stored: StoredSessionInfo[];
 }
 
 // ── Inventory (P2-F1) ────────────────────────────────────────────────────────
@@ -700,6 +720,44 @@ export function watchDirs(dirs: string[]): Promise<void> {
  *  running). Resolves to the new `windowId` so the caller can switch to it. */
 export function breakPane(paneId: string): Promise<string> {
   return invoke<string>("break_pane", { paneId });
+}
+
+// ── Stored sessions (Wave D — the sessions sidebar) ─────────────────────────
+// A stored session is an ordinary tmux window renamed `_sb:<label>`; the backend
+// partitions those out of `tabs` into `stored`. There is deliberately no "kill
+// stored session" command — a stored window carries the same `@<n>` id, so
+// `closeTab` handles it (and inherits its live-pane confirmation).
+
+/**
+ * Park a pane in the sessions sidebar. A pane with siblings is broken out into
+ * its own hidden `_sb:<label>` window; a SOLE pane renames its whole window (the
+ * tab itself becomes the stored session, so the caller must move the UI's active
+ * tab off it — `refreshState` + the reconcile focus repair do that).
+ *
+ * The backend sanitizes `label` (control chars, nested `_sb:`, leading `-`,
+ * clamped to 80 chars) and REJECTS one that sanitizes to empty.
+ */
+export function storePane(paneId: string, label: string): Promise<StoredSessionInfo> {
+  return invoke<StoredSessionInfo>("store_pane", { paneId, label });
+}
+
+/** Un-park a stored window (a rename only — no select-window, so it can't steal
+ *  focus or re-tile). Resolves to the resulting window name. */
+export function unstoreWindow(windowId: string): Promise<string> {
+  return invoke<string>("unstore_window", { windowId });
+}
+
+/** Create a session that is born parked: a detached `_sb:<label>` window (no
+ *  focus steal, no re-tile). Blank/absent `cwd` falls back to the backend's
+ *  default start dir. */
+export function createStoredSession(
+  label: string,
+  cwd?: string,
+): Promise<StoredSessionInfo> {
+  return invoke<StoredSessionInfo>("create_stored_session", {
+    label,
+    cwd: cwd && cwd.trim() ? cwd.trim() : null,
+  });
 }
 
 /**

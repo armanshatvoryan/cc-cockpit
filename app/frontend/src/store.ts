@@ -44,6 +44,9 @@ import {
   trashPath,
   watchDirs,
   breakPane,
+  storePane,
+  unstoreWindow,
+  createStoredSession,
   gitStatusSnapshot,
   saveLayout,
   loadLayout,
@@ -60,6 +63,8 @@ import {
   type AwakePayload,
   type CockpitState,
   type PaneInfo,
+  type PaneStatus,
+  type StoredSessionInfo,
   type TabInfo,
   type InventoryItem,
   type InventoryType,
@@ -93,6 +98,7 @@ const [store, setStore] = createStore<CockpitStore>({
   session: "",
   tabs: [],
   panes: [],
+  stored: [],
   ready: false,
   error: null,
 });
@@ -144,7 +150,11 @@ export function panesForTab(tabId: string): PaneInfo[] {
     .map((pid) => byId.get(pid))
     .filter((p): p is PaneInfo => !!p);
   if (ordered.length > 0) return ordered;
-  return store.panes.filter((p) => p.tabId === tab.tabId);
+  // Fallback by tabId. A STORED pane keeps a `tab-<oldWindowIndex>` tabId whose
+  // tab no longer exists (D-1 §5) — and tmux reuses window indexes, so that stale
+  // id can collide with a later tab. Never let a hidden pane surface in a grid.
+  const hidden = storedPaneIds();
+  return store.panes.filter((p) => p.tabId === tab.tabId && !hidden.has(p.paneId));
 }
 
 /** Panes belonging to the active tab, in tmux order. */
@@ -202,19 +212,54 @@ function reconcile(next: CockpitState): void {
   setStore("session", next.session);
   setStore("tabs", reconcileStore(next.tabs, { key: "tabId" }));
   setStore("panes", reconcileStore(next.panes, { key: "paneId" }));
+  // Stored rows carry no terminal identity (no mounted XtermHost keys off them),
+  // so a plain replace is correct here — the keyed reconcile above exists only to
+  // protect tab/pane object identity.
+  setStore("stored", next.stored ?? []);
 
-  // Repair active tab: keep if still present, else first tab, else null.
+  // Repair active tab: keep if still present, else first tab, else null. A window
+  // that was just STORED left `tabs` entirely, so this also moves the UI off a
+  // sole-pane store (which renames the whole — still tmux-active — window).
   const tabIds = next.tabs.map((t) => t.tabId);
   if (!activeTabId() || !tabIds.includes(activeTabId()!)) {
     setActiveTabId(tabIds[0] ?? null);
   }
 
-  // Repair focused pane: keep if still present in the active tab, else first.
-  const livePaneIds = new Set(next.panes.map((p) => p.paneId));
-  if (!focusedPaneId() || !livePaneIds.has(focusedPaneId()!)) {
-    const tab = next.tabs.find((t) => t.tabId === activeTabId());
-    setFocusedPaneId(tab?.paneIds[0] ?? null);
-  }
+  repairFocus();
+}
+
+/** Pane ids that belong to a STORED window. Stored panes stay in `store.panes`
+ *  (D-1 keeps them there on purpose, so a parked session keeps streaming status)
+ *  but they are NOT reachable through any tab — every global `store.panes`
+ *  consumer that assumes reachability has to subtract this set. */
+function storedPaneIds(): Set<string> {
+  const out = new Set<string>();
+  for (const s of store.stored) for (const pid of s.paneIds) out.add(pid);
+  return out;
+}
+
+/** Panes the user can actually reach through a tab (stored windows excluded). */
+export function reachablePanes(): PaneInfo[] {
+  const hidden = storedPaneIds();
+  return store.panes.filter((p) => !hidden.has(p.paneId));
+}
+
+/**
+ * Repair `focusedPaneId` against the current store.
+ *
+ * Focus is invalid when the pane is gone OR when its window is STORED — a stored
+ * pane is hidden, so keeping focus on it would let ⌘D split (and ⌘W close) a
+ * window the user cannot see. This is checked on EVERY reconcile, not only in
+ * `sendPaneToSidebar`: the focused pane's window can be stored by any path
+ * (another store call, an external `_sb:` rename, a re-heal).
+ */
+function repairFocus(): void {
+  const pid = focusedPaneId();
+  const stillFocusable =
+    !!pid && store.panes.some((p) => p.paneId === pid) && !storedPaneIds().has(pid);
+  if (stillFocusable) return;
+  const tab = store.tabs.find((t) => t.tabId === activeTabId());
+  setFocusedPaneId(tab?.paneIds[0] ?? null);
 }
 
 /** Force a full reload from the backend (used after topology events). */
@@ -237,9 +282,19 @@ export async function refreshState(): Promise<void> {
 // regains focus. Best-effort: every call swallows its own rejection so a missing
 // permission / platform quirk never escalates into a store error.
 
-/** Number of panes currently waiting on the user. */
+/**
+ * Number of REACHABLE panes currently waiting on the user.
+ *
+ * Wave D decision (D-1 review handoff #1): stored panes are excluded here and
+ * counted SEPARATELY by `storedNeedsInputCount()`. The dock badge is a promise
+ * that clicking through lands you on the waiting pane — a stored session has no
+ * tab, so including it would bounce the dock at nothing. The parked side is
+ * surfaced where it IS actionable: the SessionsPanel row's worst-of StatusBadge
+ * (red the moment a parked session needs input) plus the always-visible footer
+ * sessions chip, which carries the same count and opens the panel on click.
+ */
 function needsInputCount(): number {
-  return store.panes.filter((p) => p.status === "NEEDS_INPUT").length;
+  return reachablePanes().filter((p) => p.status === "NEEDS_INPUT").length;
 }
 
 /** Bounce + badge when backgrounded and something needs input. */
@@ -1131,6 +1186,20 @@ export function focusTeamMemberPane(paneId?: string): boolean {
   if (!paneId) return false;
   const pane = store.panes.find((p) => p.paneId === paneId);
   if (!pane) return false;
+  // Wave D — a PARKED member has no tab: its `tabId` names a window that left
+  // `tabs` when it was stored (D-1 §5), so activating it would point the grid at
+  // nothing. Un-park first, then focus.
+  const parked = store.stored.find((s) => s.paneIds.includes(paneId));
+  if (parked) {
+    void restoreStoredSession(parked.windowId).then(() => {
+      // Only focus if the un-park actually landed — `restoreStoredSession`
+      // reports its own failure and never rejects, so a blind focus here would
+      // put the cursor back on a still-hidden pane.
+      if (!store.stored.some((s) => s.paneIds.includes(paneId))) focusPane(paneId);
+    });
+    closeTeamBoard();
+    return true;
+  }
   setActiveTabId(pane.tabId);
   focusPane(paneId);
   closeTeamBoard();
@@ -1505,6 +1574,36 @@ export async function launchFromInventory(item: InventoryItem): Promise<void> {
   }
   const preCwd = activeProjectPath();
   try {
+    // Wave D — a cockpit-launched SUBAGENT is born in the sidebar, not in a tab:
+    // you launch a background worker to have it working, not to watch it. It's
+    // born detached (no focus steal, no re-tile) and its row keeps reporting
+    // status. Note this covers only agents the COCKPIT launches — teammates that
+    // Claude Code spawns by itself are never auto-parked (v1 ruling); they get
+    // the per-pane "park" button instead.
+    if (item.type === "subagent") {
+      const info = await createStoredSession(item.name, preCwd);
+      await refreshState();
+      const paneId = info.paneIds[0];
+      if (!paneId) {
+        setStore("error", "launch failed — stored session has no pane");
+        return;
+      }
+      // The stored pane is in `store.panes` (D-1 keeps them there), so its own
+      // cwd is a real absolute path — the same safe fallback as the tab path.
+      const cwd = preCwd ?? store.panes.find((p) => p.paneId === paneId)?.cwd;
+      if (!cwd) {
+        setStore("error", "launch failed — no working directory");
+        return;
+      }
+      // Reveal BEFORE the launch, not after: the window is already stored at
+      // this point, so if `launchAgent` throws we'd otherwise leave a parked
+      // session the user has no visible dock to find or kill it from.
+      revealSessionsPanelOnce();
+      await launchAgent(paneId, cwd, item.name);
+      closeInventory(); // reveal the sidebar row
+      return;
+    }
+
     const res = await createTab(item.name);
     await refreshState();
     setActiveTabId(res.tabId);
@@ -1515,12 +1614,8 @@ export async function launchFromInventory(item: InventoryItem): Promise<void> {
       setStore("error", "launch failed — no working directory");
       return;
     }
-    if (item.type === "subagent") {
-      await launchAgent(res.paneId, cwd, item.name);
-    } else {
-      await launchCc(res.paneId, cwd);
-      window.setTimeout(() => paneSendKeys(res.paneId, `/${item.name} `), 2500);
-    }
+    await launchCc(res.paneId, cwd);
+    window.setTimeout(() => paneSendKeys(res.paneId, `/${item.name} `), 2500);
     closeInventory(); // reveal the new pane
   } catch (e) {
     setStore("error", `launch failed: ${String(e)}`);
@@ -1656,7 +1751,10 @@ export async function syncFileTreeRoot(): Promise<void> {
       cwd = undefined; // dead/odd pane — fall back below
     }
   }
-  if (!cwd) cwd = focusedPane()?.cwd || store.panes[0]?.cwd;
+  // Last-ditch fallback walks REACHABLE panes: `store.panes[0]` can be a parked
+  // pane, which would root the tree at a dir belonging to a session that has no
+  // tab and that the user isn't looking at.
+  if (!cwd) cwd = focusedPane()?.cwd || reachablePanes()[0]?.cwd;
   if (cwd && cwd !== fileTree.root) ftSetRoot(cwd);
 }
 
@@ -1942,8 +2040,23 @@ export function paneLabel(pane: PaneInfo): { text: string; tooltip: string } {
   return { text, tooltip: tooltipParts.join(" — ") || pane.paneId };
 }
 /** Attach a file to a chosen agent: insert its path into that agent's pane.
- *  (insertPathInto detects the claude pane → `@path` mention.) */
+ *  (insertPathInto detects the claude pane → `@path` mention.)
+ *
+ *  Wave D — the submenu keys off `memberPaneIsLive`, which reads raw
+ *  `store.panes`, and PARKED panes stay there (D-1 keeps them so a stored
+ *  session keeps streaming status). So a parked agent is a selectable target,
+ *  and inserting into it would type a path into a pane with no tab — the user
+ *  would never see it land. Un-park first, exactly as `focusTeamMemberPane`
+ *  does, so the insert always goes somewhere visible. */
 export async function ftAttachToAgent(entry: FileEntry, paneId: string): Promise<void> {
+  const parked = store.stored.find((s) => s.paneIds.includes(paneId));
+  if (parked) {
+    await restoreStoredSession(parked.windowId);
+    // `restoreStoredSession` reports its own failure and never rejects, so
+    // re-check that the un-park actually landed — a blind insert here would put
+    // the path back into a still-hidden pane, the very bug this guards.
+    if (store.stored.some((s) => s.paneIds.includes(paneId))) return;
+  }
   await insertPathInto(paneId, entry.path);
 }
 
@@ -2007,5 +2120,187 @@ export async function sendPaneToNewTab(paneId: string): Promise<void> {
     }
   } catch (e) {
     setStore("error", `send to new tab failed: ${String(e)}`);
+  }
+}
+
+// ── Sessions sidebar (Wave D) ────────────────────────────────────────────────
+//
+// A stored session is a tmux window renamed `_sb:<label>`: alive, still polled,
+// still streaming status — just parked out of the tab bar into a right-edge
+// dock. It's the answer to "I have 9 agents and 6 tabs": park the ones you're
+// not watching, keep their status visible, restore with one click.
+//
+// The sidebar is a pure VIEW over `store.stored` (backend truth, refreshed by
+// `refreshState`); nothing here caches a stored row.
+
+/** Sidebar shown? ⌘S toggles; the first store auto-opens it (see below). */
+const [sessionsPanelOpen, setSessionsPanelOpen] = createSignal(false);
+export { sessionsPanelOpen };
+
+// The panel opens ITSELF exactly once, on the first successful store of the
+// session — otherwise the first parked session would vanish with no visible
+// trace. After that the user's own open/close choice is respected: re-opening on
+// every store would fight someone who deliberately closed the dock.
+let sessionsPanelAutoOpened = false;
+
+export function closeSessionsPanel(): void {
+  setSessionsPanelOpen(false);
+}
+export function toggleSessionsPanel(): void {
+  setSessionsPanelOpen((v) => !v);
+}
+
+/** Reveal the dock the first time something lands in it. */
+function revealSessionsPanelOnce(): void {
+  if (sessionsPanelAutoOpened) return;
+  sessionsPanelAutoOpened = true;
+  setSessionsPanelOpen(true);
+}
+
+/** Panes of one stored window, in tmux order (they stay in `store.panes`). */
+export function storedPanes(s: StoredSessionInfo): PaneInfo[] {
+  const byId = new Map(store.panes.map((p) => [p.paneId, p]));
+  return s.paneIds.map((pid) => byId.get(pid)).filter((p): p is PaneInfo => !!p);
+}
+
+// Worst-of ranking for a stored row's badge, per spec: NEEDS_INPUT > WORKING >
+// IDLE > DEAD. UNKNOWN sits between IDLE and DEAD — it means "not classified
+// yet", which is less informative than IDLE but not the tombstone DEAD is.
+const STATUS_RANK: Record<PaneStatus, number> = {
+  NEEDS_INPUT: 0,
+  WORKING: 1,
+  IDLE: 2,
+  UNKNOWN: 3,
+  DEAD: 4,
+};
+
+/** The single status a stored row shows: the worst status across its panes.
+ *  No panes reported yet ⇒ UNKNOWN (never invent a state). */
+export function storedStatus(s: StoredSessionInfo): PaneStatus {
+  let worst: PaneStatus | null = null;
+  for (const p of storedPanes(s)) {
+    if (worst === null || STATUS_RANK[p.status] < STATUS_RANK[worst]) worst = p.status;
+  }
+  return worst ?? "UNKNOWN";
+}
+
+/** Parked panes waiting on the user. Counted separately from `needsInputCount`
+ *  (the dock badge) — see the note there. */
+export function storedNeedsInputCount(): number {
+  const hidden = storedPaneIds();
+  return store.panes.filter((p) => hidden.has(p.paneId) && p.status === "NEEDS_INPUT")
+    .length;
+}
+
+/** Tooltip for a stored row: pane count + cwd of its first pane. */
+export function storedTooltip(s: StoredSessionInfo): string {
+  const panes = storedPanes(s);
+  const n = panes.length || s.paneIds.length;
+  const cwd = panes[0]?.cwd;
+  const head = `${n} pane${n === 1 ? "" : "s"} · ${s.windowId}`;
+  return cwd ? `${head} — ${cwd}` : head;
+}
+
+// ── Labelling a session ──────────────────────────────────────────────────────
+
+/** Claude Code (and other TUIs) prefix the OSC title with a decorative status
+ *  glyph — "✳ claude", "✻ cc-cockpit". Drop that leading run so the sidebar
+ *  shows the name, not the spinner. Letters/digits of ANY script, plus the
+ *  path-ish leaders `/ ~ . _ -`, end the strip. */
+function stripTitleGlyph(title: string): string {
+  return title.replace(/^[^\p{L}\p{N}/~._-]+/u, "").trim();
+}
+
+/** Folder basename of a path ("" when unknown). */
+function folderName(cwd: string): string {
+  const t = cwd.replace(/\/+$/, "");
+  if (!t) return "";
+  return t.slice(t.lastIndexOf("/") + 1) || t;
+}
+
+/** The label a pane is parked under. Priority (spec): the team-board member name
+ *  (the only name that says WHO the agent is — CC's own OSC title overwrite
+ *  yields "general-purpose" for every teammate) → the pane title minus its status
+ *  glyph → the cwd's folder name → the raw pane id (never empty: the backend
+ *  rejects a label that sanitizes away). */
+function labelForPane(pane: PaneInfo): string {
+  const member = liveMembersByPane().get(pane.paneId);
+  const candidates = [
+    member?.name,
+    stripTitleGlyph(pane.title ?? ""),
+    folderName(pane.cwd ?? ""),
+  ];
+  for (const c of candidates) {
+    if (c && c.trim()) return c.trim();
+  }
+  return pane.paneId;
+}
+
+/**
+ * Park a pane in the sessions sidebar.
+ *
+ * The team board is refreshed FIRST (best effort) so `liveMembersByPane()` can
+ * resolve a teammate's real name — the board is otherwise only loaded when the
+ * user opens it, and a stale board would silently downgrade the label.
+ */
+export async function sendPaneToSidebar(paneId: string): Promise<void> {
+  const pane = store.panes.find((p) => p.paneId === paneId);
+  if (!pane) return;
+  await loadTeamRunsNow(); // never throws — it stores its own error
+  try {
+    await storePane(paneId, labelForPane(pane));
+    await refreshState();
+    // Focus repair: `refreshState` → `reconcile` → `repairFocus` already moves
+    // focus off a pane that is now hidden (and off a tab that vanished, for the
+    // sole-pane store). Re-assert it here so this path is correct even if it is
+    // ever called without a reconcile in between — ⌘D on a stale focus would
+    // split a window the user cannot see.
+    repairFocus();
+    revealSessionsPanelOnce();
+  } catch (e) {
+    setStore("error", `send to sidebar failed: ${String(e)}`);
+  }
+}
+
+/** Un-park a stored session: rename it back, then make it the active tab and
+ *  focus its first pane (mirrors `sendPaneToNewTab` + `switchTab`). */
+export async function restoreStoredSession(windowId: string): Promise<void> {
+  try {
+    await unstoreWindow(windowId);
+    await refreshState();
+    const tab = store.tabs.find((t) => t.tmuxWindowId === windowId);
+    if (!tab) {
+      // The rename landed but the window didn't come back as a tab (raced with a
+      // close, or tmux renamed it under us). State is already resynced; say so
+      // rather than leaving a silent no-op.
+      setStore("error", `restore failed — window ${windowId} is not a tab`);
+      return;
+    }
+    switchTab(tab.tabId); // active tab + focus + grid push + git/tree + persist
+  } catch (e) {
+    setStore("error", `restore failed: ${String(e)}`);
+  }
+}
+
+/**
+ * Kill a stored session. A stored window carries the same `@<n>` id, so this is
+ * the ordinary `close_tab` — including its live-pane confirmation: `ok:false`
+ * with a non-empty `livePanes` means "ask first", and the caller re-calls with
+ * `force`. Same contract as `requestCloseTab`.
+ */
+export async function killStoredSession(
+  windowId: string,
+  force = false,
+): Promise<{ needsConfirm: boolean; livePanes: string[] }> {
+  try {
+    const res = await closeTab(windowId, force);
+    if (!res.ok && res.livePanes.length > 0) {
+      return { needsConfirm: true, livePanes: res.livePanes };
+    }
+    await refreshState();
+    return { needsConfirm: false, livePanes: [] };
+  } catch (e) {
+    setStore("error", `kill stored session failed: ${String(e)}`);
+    return { needsConfirm: false, livePanes: [] };
   }
 }
