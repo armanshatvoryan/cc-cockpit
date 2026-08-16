@@ -96,6 +96,14 @@ struct PaneTopologyPayload {
     layout: Option<String>,
 }
 
+/// `cockpit:cmd-error` — tmux rejected a control-mode command (`%error`).
+/// `lines` is the message body tmux sent inside the `%begin`/`%error` block.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CmdErrorPayload {
+    lines: Vec<String>,
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────────
 
 /// Ensure socket + `cockpit-main`, attach the control client, start the event
@@ -532,6 +540,13 @@ fn spawn_forwarder(app: AppHandle, rx: std::sync::mpsc::Receiver<Outbound>) {
                 Ok(Outbound::Topology(t)) => {
                     flush_pending(&app, &mut pending);
                     let _ = app.emit("pane:topology", topology_payload(t));
+                }
+                Ok(Outbound::CommandError { lines }) => {
+                    // Same ordering rule as topology: flush first, so the pane
+                    // output that preceded the rejected command is delivered
+                    // before the error the frontend reacts to.
+                    flush_pending(&app, &mut pending);
+                    let _ = app.emit("cockpit:cmd-error", CmdErrorPayload { lines });
                 }
                 Ok(Outbound::Exit { reason }) => {
                     flush_pending(&app, &mut pending);

@@ -34,6 +34,15 @@ pub enum Outbound {
     PaneData { pane_id: String, bytes_b64: String },
     /// A topology / lifecycle event the frontend cares about.
     Topology(TopologyEvent),
+    /// tmux REJECTED a control-mode command (`%error` closing its `%begin`
+    /// block); `lines` is the message body tmux sent between the two.
+    ///
+    /// Control mode has no other failure channel: `write_cmd` only proves the
+    /// bytes reached the server's stdin, never that the command ran. A rejected
+    /// `set_grid` therefore looked like a success to the whole stack, and the
+    /// frontend's change-guard then blocked every retry at that size — the
+    /// window sat at the wrong geometry with nothing logged anywhere.
+    CommandError { lines: Vec<String> },
     /// The control client exited (session gone / detached).
     Exit { reason: Option<String> },
 }
@@ -255,7 +264,11 @@ fn pump(mut stdout: impl Read, tx: Sender<Outbound>) {
                     Some(Outbound::Topology(TopologyEvent::PaneModeChanged { pane_id }))
                 }
                 Event::Exit { reason } => Some(Outbound::Exit { reason }),
-                // Begin/End/Error/renames/session events: not forwarded to the
+                // A rejected command is the ONLY command-reply the app layer
+                // needs: everything else in a %begin/%end block is a reply to a
+                // command the manager issued out-of-band and already handles.
+                Event::Error { lines, .. } => Some(Outbound::CommandError { lines }),
+                // Begin/End/renames/session events: not forwarded to the
                 // terminal layer in this spike (command-reply plumbing).
                 _ => None,
             };
@@ -362,6 +375,48 @@ mod tests {
             !cmd.contains("refresh-client"),
             "client-global sizing must be gone: {cmd}"
         );
+    }
+
+    #[test]
+    fn pump_forwards_command_error_blocks() {
+        // A rejected control-mode command arrives as %begin, the error text, then
+        // %error (NOT %end). Before this it was swallowed by the `_ => None` arm,
+        // so a rejected `set_grid` was silently invisible: the frontend recorded
+        // the grid key as pushed and the window stayed at the wrong size forever.
+        let stream: &[u8] = b"%begin 100 7 1\n\
+             can't find window: @99\n\
+             %error 100 7 1\n\
+             %output %0 hi\n";
+        let (tx, rx) = mpsc::channel::<Outbound>();
+        pump(stream, tx);
+        let evs: Vec<Outbound> = rx.iter().collect();
+
+        match &evs[0] {
+            Outbound::CommandError { lines } => {
+                assert_eq!(lines, &vec!["can't find window: @99".to_string()]);
+            }
+            other => panic!("expected CommandError, got {other:?}"),
+        }
+        // Ordering is preserved: output after the error still comes through, and
+        // EOF still terminates the pump.
+        assert!(matches!(&evs[1], Outbound::PaneData { pane_id, .. } if pane_id == "%0"));
+        assert!(matches!(&evs[2], Outbound::Exit { .. }));
+        assert_eq!(evs.len(), 3);
+    }
+
+    #[test]
+    fn pump_ignores_successful_command_blocks() {
+        // %end blocks are ordinary command replies (list-panes output etc.) and
+        // must stay off the event bus — only %error is surfaced.
+        let stream: &[u8] = b"%begin 100 8 1\n%0 zsh\n%end 100 8 1\n";
+        let (tx, rx) = mpsc::channel::<Outbound>();
+        pump(stream, tx);
+        let evs: Vec<Outbound> = rx.iter().collect();
+        assert!(
+            !evs.iter().any(|e| matches!(e, Outbound::CommandError { .. })),
+            "successful block leaked as an error: {evs:?}"
+        );
+        assert_eq!(evs.len(), 1, "only the EOF Exit is expected: {evs:?}");
     }
 
     #[test]
