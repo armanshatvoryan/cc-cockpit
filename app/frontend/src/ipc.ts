@@ -586,16 +586,24 @@ export function effectiveDefaultCwd(): Promise<string> {
   return invoke<string>("effective_default_cwd");
 }
 
-/** Keep-awake lever: block macOS system sleep (caffeinate-backed). Resolves to
- *  the ACTUAL state afterwards — the toggle renders that, not the request. */
-export function awakeSet(on: boolean): Promise<boolean> {
-  return invoke<boolean>("awake_set", { on });
+/** Keep-awake lever state. `lidProof` = the root helper accepted, so lid close
+ *  is covered too (plain caffeinate assertions never survive clamshell sleep). */
+export interface AwakePayload {
+  on: boolean;
+  lidProof: boolean;
+}
+
+/** Keep-awake lever: block macOS system sleep (caffeinate + root helper when
+ *  installed). Resolves to the ACTUAL state afterwards — the toggle renders
+ *  that, not the request. */
+export function awakeSet(on: boolean): Promise<AwakePayload> {
+  return invoke<AwakePayload>("awake_set", { on });
 }
 
 /** Current keep-awake state. The backend child survives a webview reload, so
  *  the footer toggle asks on boot instead of assuming off. */
-export function awakeGet(): Promise<boolean> {
-  return invoke<boolean>("awake_get");
+export function awakeGet(): Promise<AwakePayload> {
+  return invoke<AwakePayload>("awake_get");
 }
 
 /** One sibling project in the repo-picker dropdown. */

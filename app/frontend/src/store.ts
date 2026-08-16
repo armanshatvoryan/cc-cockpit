@@ -54,6 +54,7 @@ import {
   onCockpitReconnected,
   onCloseRequested,
   onFileTreeChanged,
+  type AwakePayload,
   type CockpitState,
   type PaneInfo,
   type TabInfo,
@@ -906,14 +907,14 @@ export function closeSettings(): void {
 }
 // ── Keep-awake lever ─────────────────────────────────────────────────────────
 
-const [awakeOn, setAwakeOn] = createSignal(false);
-export { awakeOn };
+const [awake, setAwake] = createSignal<AwakePayload>({ on: false, lidProof: false });
+export { awake };
 
 /** Sync the footer toggle with the backend's caffeinate child, which survives
  *  a webview reload — the toggle must ask, not assume off. */
 export async function syncAwake(): Promise<void> {
   try {
-    setAwakeOn(await awakeGet());
+    setAwake(await awakeGet());
   } catch {
     // cosmetic only — leave the toggle showing off
   }
@@ -922,7 +923,7 @@ export async function syncAwake(): Promise<void> {
 /** Flip the keep-awake lever; render whatever state the backend reports. */
 export async function toggleAwake(): Promise<void> {
   try {
-    setAwakeOn(await awakeSet(!awakeOn()));
+    setAwake(await awakeSet(!awake().on));
   } catch (e) {
     setStore("error", `keep-awake failed: ${String(e)}`);
   }

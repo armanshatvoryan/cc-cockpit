@@ -1,0 +1,37 @@
+#!/bin/bash
+# CC Cockpit sleep-lever root helper.
+#
+# `pmset disablesleep` is the only switch macOS honors on lid close —
+# power assertions (caffeinate) never survive clamshell sleep. This runs as
+# root via a sudoers entry scoped to exactly this file (see
+# install-sleeplever.sh), so the app can flip it without a password prompt.
+#
+#   on <pid>   disablesleep 1 + root watchdog: resets to 0 when <pid> dies,
+#              so a crashed/killed app can never leave the Mac unable to sleep.
+#   off        disablesleep 0 immediately.
+#   status     print pmset's SleepDisabled line.
+set -euo pipefail
+
+case "${1:-}" in
+  on)
+    pid="${2:-}"
+    [[ "$pid" =~ ^[0-9]+$ ]] || { echo "usage: $0 on <pid>" >&2; exit 2; }
+    /usr/bin/pmset -a disablesleep 1
+    # Watchdog, detached (fds closed so the caller's .output() never blocks).
+    # Extra watchdogs from repeated toggles are harmless: reset is idempotent.
+    (
+      while kill -0 "$pid" 2>/dev/null; do sleep 5; done
+      /usr/bin/pmset -a disablesleep 0
+    ) </dev/null >/dev/null 2>&1 &
+    ;;
+  off)
+    /usr/bin/pmset -a disablesleep 0
+    ;;
+  status)
+    /usr/bin/pmset -g | grep -i sleepdisabled
+    ;;
+  *)
+    echo "usage: $0 on <pid> | off | status" >&2
+    exit 2
+    ;;
+esac

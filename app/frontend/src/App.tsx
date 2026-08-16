@@ -14,7 +14,7 @@ import {
   sidebarVisible,
   ftInitHome,
   settingsOpen,
-  awakeOn,
+  awake,
   toggleAwake,
 } from "./store";
 import { installKeyboard } from "./keyboard";
@@ -76,15 +76,17 @@ export const App: Component = () => {
               <span class="footer-spacer" />
               <button
                 class="awake-toggle"
-                classList={{ on: awakeOn() }}
+                classList={{ on: awake().on }}
                 title={
-                  awakeOn()
-                    ? "Keeping the Mac awake — click to allow sleep again"
+                  awake().on
+                    ? awake().lidProof
+                      ? "Keeping the Mac awake, lid close included — click to allow sleep again"
+                      : "Keeping the Mac awake while idle — lid close still sleeps (root helper not installed: sudo app/scripts/install-sleeplever.sh)"
                     : "Keep the Mac awake (blocks system sleep; display may still sleep)"
                 }
                 onClick={() => void toggleAwake()}
               >
-                ☕ {awakeOn() ? "awake" : "sleep ok"}
+                ☕ {awake().on ? (awake().lidProof ? "awake · lid-proof" : "awake · idle-only") : "sleep ok"}
               </button>
               <span class="footer-item">
                 {store.tabs.length} tab{store.tabs.length === 1 ? "" : "s"} ·{" "}
