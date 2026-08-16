@@ -63,6 +63,7 @@ import {
   type InventoryType,
   type AuditMatrix,
   type TeamRun,
+  type TeamMember,
   type Roster,
   type Workflow,
   type SpinupPreview,
@@ -349,9 +350,25 @@ export async function bootCockpit(): Promise<void> {
   // DEBOUNCED: a burst of layout-change events (e.g. an initial resize storm)
   // collapses into a single reload instead of hammering list_state().
   let topoTimer: number | undefined;
-  const unTopo = await onPaneTopology(() => {
+  // A2 — a new pane may be a freshly-launched teammate; debounce-reload the
+  // team board so `paneLabel` can resolve its name/task without the user
+  // opening the board. Separate timer/delay from the state reconcile above —
+  // this is a "nice to have eventually", not on the topology critical path.
+  let teamTopoTimer: number | undefined;
+  const unTopo = await onPaneTopology((p) => {
     if (topoTimer) clearTimeout(topoTimer);
     topoTimer = window.setTimeout(() => void refreshState(), 120);
+    // Only a STRUCTURAL change can bring a new teammate pane into existence.
+    // `activePaneChanged` fires on every focus click and `paneModeChanged` on
+    // copy-mode toggles — sweeping ~/.claude/teams off those is pure waste.
+    if (p.kind !== "layoutChange" && p.kind !== "windowAdd") return;
+    if (teamTopoTimer) clearTimeout(teamTopoTimer);
+    // QUIET: this reload is speculative, so it must never flip the board into
+    // its "loading…" fallback — an open board would blank on every new pane.
+    teamTopoTimer = window.setTimeout(
+      () => void loadTeamRunsNow({ quiet: true }),
+      400,
+    );
   });
 
   // cockpit:reconnected — backend re-healed a vanished server. Reload state, then
@@ -1030,18 +1047,28 @@ const [teamBoard, setTeamBoard] = createStore<TeamBoardStore>({
 const [teamBoardOpen, setTeamBoardOpen] = createSignal(false);
 export { teamBoard, teamBoardOpen };
 
-/** Reload the live team runs from native session files. */
-export async function loadTeamRunsNow(): Promise<void> {
-  setTeamBoard("loading", true);
-  setTeamBoard("error", null);
+/** Reload the live team runs from native session files.
+ *
+ *  `quiet` = a speculative background refresh (topology-triggered): it never
+ *  touches `loading`/`error`, so an open board keeps showing its current rows
+ *  instead of flickering through "loading…", and a transient read failure does
+ *  not wipe them. User-initiated reloads (open, ↻, cleanup) stay loud. */
+export async function loadTeamRunsNow(opts?: { quiet?: boolean }): Promise<void> {
+  const quiet = opts?.quiet === true;
+  if (!quiet) {
+    setTeamBoard("loading", true);
+    setTeamBoard("error", null);
+  }
   try {
     const runs = await loadTeamRuns();
     setTeamBoard("runs", runs);
   } catch (e) {
-    setTeamBoard("error", String(e));
-    setTeamBoard("runs", []);
+    if (!quiet) {
+      setTeamBoard("error", String(e));
+      setTeamBoard("runs", []);
+    }
   } finally {
-    setTeamBoard("loading", false);
+    if (!quiet) setTeamBoard("loading", false);
   }
 }
 
@@ -1399,6 +1426,42 @@ export function cancelToggle(): void {
 // the user adds args + runs it). Plugins/MCP aren't launchable.
 
 const NAME_OK = /^[A-Za-z0-9._-]+$/;
+
+/** True when the pane's foreground command is claude — i.e. typing into it
+ *  would land in a live agent's prompt, not a shell. Fails CLOSED (treats an
+ *  unreadable pane as "running claude") so a lost query can never cause a
+ *  stray launch line to be typed into an agent. */
+async function paneRunsClaude(paneId: string): Promise<boolean> {
+  try {
+    return (await paneCommand(paneId)).toLowerCase().includes("claude");
+  } catch {
+    return true;
+  }
+}
+
+/** A1 — the pane toolbar's zero-friction "Launch CC" path: launch straight
+ *  into an existing pane (no dialog). Surfaces a failure the same way every
+ *  other launch path here does — `setStore("error", ...)` — so a bad cwd or
+ *  backend error is visible, not indistinguishable from success. */
+export async function directLaunchCc(paneId: string, cwd: string): Promise<void> {
+  // An IDLE pane can be an idle CLAUDE SESSION, not a fresh shell — launching
+  // there would type `cd … && claude` + CR straight into the agent's prompt.
+  if (await paneRunsClaude(paneId)) {
+    setStore(
+      "error",
+      `pane ${paneId} is already running claude — use ⌥-click / ⌄ for launch options`,
+    );
+    return;
+  }
+  // An empty cwd would emit `cd '' && … claude`: zsh errors on the cd and the
+  // `&&` swallows the launch, while run_line_in_pane still reports Ok.
+  const dir = cwd.trim() || "~";
+  try {
+    await launchCc(paneId, dir);
+  } catch (e) {
+    setStore("error", `launch failed: ${String(e)}`);
+  }
+}
 
 export async function launchFromInventory(item: InventoryItem): Promise<void> {
   if (item.type !== "skill" && item.type !== "subagent") return;
@@ -1807,20 +1870,42 @@ export async function ftConfirmDelete(): Promise<void> {
 }
 
 // ── Attach to Agent ───────────────────────────────────────────────────────────
-/** Live agent panes for the Attach-to-Agent submenu: team-board members whose
- *  `%N` pane this cockpit currently tracks (deduped). */
-export function ftLiveAgents(): { paneId: string; label: string }[] {
-  const seen = new Set<string>();
-  const out: { paneId: string; label: string }[] = [];
+/** `%N` pane id → the live team-board member occupying it (first match wins;
+ *  a pane belongs to at most one live member in practice). The pane↔member
+ *  join, shared by `ftLiveAgents` (Attach-to-Agent submenu) and `paneLabel`
+ *  (toolbar name). */
+function liveMembersByPane(): Map<string, TeamMember> {
+  const out = new Map<string, TeamMember>();
   for (const run of teamBoard.runs) {
     for (const m of run.members) {
-      if (m.tmuxPaneId && memberPaneIsLive(m.tmuxPaneId) && !seen.has(m.tmuxPaneId)) {
-        seen.add(m.tmuxPaneId);
-        out.push({ paneId: m.tmuxPaneId, label: `${m.name || m.agentId} ${m.tmuxPaneId}` });
+      if (m.tmuxPaneId && memberPaneIsLive(m.tmuxPaneId) && !out.has(m.tmuxPaneId)) {
+        out.set(m.tmuxPaneId, m);
       }
     }
   }
   return out;
+}
+
+/** Live agent panes for the Attach-to-Agent submenu: team-board members whose
+ *  `%N` pane this cockpit currently tracks (deduped). */
+export function ftLiveAgents(): { paneId: string; label: string }[] {
+  return Array.from(liveMembersByPane(), ([paneId, m]) => ({
+    paneId,
+    label: `${m.name || m.agentId} ${paneId}`,
+  }));
+}
+
+/** Best display name for a pane's toolbar: a live team-board member's `name`
+ *  (Claude Code's own OSC title overwrite otherwise yields "general-purpose"
+ *  for every teammate pane), else the pane's own title, else its raw id. The
+ *  tooltip surfaces the member's task summary (if any) plus the pane's cwd. */
+export function paneLabel(pane: PaneInfo): { text: string; tooltip: string } {
+  const member = liveMembersByPane().get(pane.paneId);
+  const text = member?.name || pane.title || pane.paneId;
+  const tooltipParts = [member?.taskSummary, pane.cwd].filter(
+    (p): p is string => !!p,
+  );
+  return { text, tooltip: tooltipParts.join(" — ") || pane.paneId };
 }
 /** Attach a file to a chosen agent: insert its path into that agent's pane.
  *  (insertPathInto detects the claude pane → `@path` mention.) */

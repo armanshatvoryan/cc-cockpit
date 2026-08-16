@@ -173,6 +173,10 @@ export interface TeamMember {
   model?: string;
   cwd?: string;
   color?: string;
+  /** Raw native `prompt` the teammate was spun up with, if any. */
+  prompt?: string;
+  /** Derived first-sentence summary of `prompt`, trimmed to ~80 chars. */
+  taskSummary?: string;
   isActive: boolean;
   isLead: boolean;
 }
