@@ -2044,7 +2044,7 @@ export async function sendPaneToNewTab(paneId: string): Promise<void> {
 // The sidebar is a pure VIEW over `store.stored` (backend truth, refreshed by
 // `refreshState`); nothing here caches a stored row.
 
-/** Sidebar shown? ⌘⇧B toggles; the first store auto-opens it (see below). */
+/** Sidebar shown? ⌘S toggles; the first store auto-opens it (see below). */
 const [sessionsPanelOpen, setSessionsPanelOpen] = createSignal(false);
 export { sessionsPanelOpen };
 

@@ -7,7 +7,7 @@
 //   ⌘I          toggle the inventory panel
 //   ⌘⇧T         toggle the live team board
 //   ⌘B          toggle the docked file-tree sidebar
-//   ⌘⇧B         toggle the docked sessions sidebar (parked `_sb:` sessions)
+//   ⌘S          toggle the docked sessions sidebar (parked `_sb:` sessions)
 //   ⌘,          toggle the settings dialog (macOS Preferences convention)
 //   ⌘= / ⌘+     zoom the whole UI in   (+0.1)
 //   ⌘-          zoom the whole UI out  (−0.1)
@@ -172,11 +172,18 @@ export function installKeyboard(): void {
       return;
     }
 
-    // ⌘B — toggle the docked file-tree sidebar. ⌘⇧B — the sessions sidebar.
+    // ⌘B — toggle the docked file-tree sidebar.
     if (k === "b") {
       e.preventDefault();
-      if (e.shiftKey) toggleSessionsPanel();
-      else toggleSidebar();
+      toggleSidebar();
+      return;
+    }
+
+    // ⌘S — toggle the docked sessions sidebar. Nothing in the cockpit saves, so
+    // the webview's native ⌘S (save-page) is dead weight we preventDefault away.
+    if (k === "s") {
+      e.preventDefault();
+      toggleSessionsPanel();
       return;
     }
   }

@@ -8,7 +8,7 @@
 // waiting on you goes red here without a tab existing for it).
 //
 // Interactions: clicking the row (or ↩) restores the session as a tab; × kills
-// it, with the same live-pane confirmation the tab close uses. ⌘⇧B toggles. Each
+// it, with the same live-pane confirmation the tab close uses. ⌘S toggles. Each
 // of the three is a real <button>, so Tab/Enter/Space work natively — see the
 // note on the row markup below.
 //
@@ -101,7 +101,7 @@ export const SessionsPanel: Component = () => {
           <span class="sb-spacer" />
           <button
             class="ft-icon-btn"
-            title="Hide sessions sidebar (⌘⇧B)"
+            title="Hide sessions sidebar (⌘S)"
             onClick={closeSessionsPanel}
           >
             ×

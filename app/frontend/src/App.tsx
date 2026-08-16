@@ -197,8 +197,8 @@ export const App: Component = () => {
                     storedNeedsInputCount() > 0
                       ? `${storedNeedsInputCount()} parked session${
                           storedNeedsInputCount() === 1 ? "" : "s"
-                        } waiting on you — ⌘⇧B`
-                      : "Parked sessions (⌘⇧B)"
+                        } waiting on you — ⌘S`
+                      : "Parked sessions (⌘S)"
                   }
                   onClick={toggleSessionsPanel}
                 >
@@ -216,7 +216,7 @@ export const App: Component = () => {
                 {reachablePanes().length === 1 ? "" : "s"}
               </span>
               <span class="footer-keys">
-                ⌘B files · ⌘⇧B sessions · ⌘T tab · ⌘1-9 switch · ⌘D split · ⌘I
+                ⌘B files · ⌘S sessions · ⌘T tab · ⌘1-9 switch · ⌘D split · ⌘I
                 inventory · ⌘⇧T teams · ⌘, settings
               </span>
             </footer>
