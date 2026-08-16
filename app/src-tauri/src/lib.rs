@@ -24,6 +24,7 @@ pub mod status;
 pub mod teamruns;
 pub mod templates;
 pub mod tmux;
+pub mod usage;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -47,12 +48,19 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 /// control-mode frame (which floods the IPC bridge and causes UI lag).
 const COALESCE_MS: u64 = 16;
 
+/// Token-burn poll interval. The scan is incremental (unchanged files aren't
+/// read at all), so 45s is cheap in steady state while still feeling live.
+const USAGE_POLL_MS: u64 = 45_000;
+
 /// Managed state: the SessionManager behind a mutex (Tauri commands are sync).
 #[derive(Clone)]
 pub struct AppState {
     pub mgr: Arc<Mutex<SessionManager>>,
     /// Set once the forwarder + poller are running, so re-init doesn't dup them.
     pub started: Arc<Mutex<bool>>,
+    /// Latest token-burn snapshot, published by the usage poller thread. `None`
+    /// until the first (cold) pass completes — the UI shows nothing, not a zero.
+    pub usage: Arc<Mutex<Option<usage::UsageSnapshot>>>,
 }
 
 impl Default for AppState {
@@ -60,6 +68,7 @@ impl Default for AppState {
         Self {
             mgr: Arc::new(Mutex::new(SessionManager::new())),
             started: Arc::new(Mutex::new(false)),
+            usage: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -124,6 +133,7 @@ fn cockpit_init(app: AppHandle, state: State<'_, AppState>) -> Result<CockpitSta
         let mut started = state.started.lock().unwrap();
         if !*started {
             spawn_status_poller(app.clone(), state.mgr.clone());
+            spawn_usage_poller(app.clone(), state.usage.clone());
             *started = true;
         }
     }
@@ -493,6 +503,17 @@ fn watch_dirs(app: AppHandle, dirs: Vec<String>) -> Result<(), String> {
     filetree::set_watched(&app, dirs)
 }
 
+/// Token-burn snapshot (Wave C): the last snapshot published by the usage
+/// poller — rolling 5h + 7d token totals scanned out of the local Claude Code
+/// transcripts. `None` until the first (cold) pass finishes, so the footer can
+/// render "—" instead of a misleading zero. Pull-on-boot only; live updates
+/// arrive on the `usage:update` event. Never scans on this call — an IPC path
+/// must not wait on hundreds of MB of disk.
+#[tauri::command]
+fn usage_snapshot(state: State<'_, AppState>) -> Option<usage::UsageSnapshot> {
+    state.usage.lock().ok().and_then(|s| s.clone())
+}
+
 /// "Send pane → new tab" (v1.1): break a pane out into its own new window/tab,
 /// keeping it running. Returns the new window id so the frontend can switch to it.
 #[tauri::command]
@@ -632,6 +653,34 @@ fn topology_payload(t: TopologyEvent) -> PaneTopologyPayload {
             ..base
         },
     }
+}
+
+/// Token-burn poller (Wave C): scan the local Claude Code transcripts, publish
+/// the snapshot into `AppState.usage`, and emit `usage:update`.
+///
+/// Runs on its own thread on purpose. The FIRST pass is the expensive one (~432
+/// MB of in-window transcript on a heavy machine); every later pass reads only
+/// the bytes agents appended since, because the scanner is reused and carries
+/// its per-file cursors. No UI/IPC path ever waits on this — the frontend pulls
+/// the last published snapshot via `usage_snapshot` and is pushed the next one.
+///
+/// If `$HOME` is unset there is nothing to scan, so the thread simply doesn't
+/// start (the meter stays empty rather than reading a wrong root).
+fn spawn_usage_poller(app: AppHandle, slot: Arc<Mutex<Option<usage::UsageSnapshot>>>) {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let mut scanner = usage::UsageScanner::new(&home);
+        loop {
+            let snap = scanner.scan(usage::now_ms());
+            if let Ok(mut s) = slot.lock() {
+                *s = Some(snap.clone());
+            }
+            let _ = app.emit("usage:update", snap);
+            std::thread::sleep(Duration::from_millis(USAGE_POLL_MS));
+        }
+    });
 }
 
 /// ~1Hz status poller: classify changed panes, emit `pane:status` on change.
@@ -816,6 +865,7 @@ pub fn run() {
             trash_path,
             watch_dirs,
             break_pane,
+            usage_snapshot,
             persist::save_layout,
             persist::load_layout,
             settings::load_settings,

@@ -55,6 +55,8 @@ import {
   onCockpitReconnected,
   onCloseRequested,
   onFileTreeChanged,
+  usageSnapshot,
+  onUsageUpdate,
   type AwakePayload,
   type CockpitState,
   type PaneInfo,
@@ -76,6 +78,7 @@ import {
   saveSettings,
   effectiveDefaultCwd,
   type CockpitSettings,
+  type UsageSnapshot,
 } from "./ipc";
 
 interface CockpitStore extends CockpitState {
@@ -105,7 +108,22 @@ const [tabNameOverrides, setTabNameOverrides] = createStore<Record<string, strin
 // absent key = not yet polled. Only the ACTIVE tab is refreshed (cheap).
 const [gitStatus, setGitStatus] = createStore<Record<string, GitStatus | null>>({});
 
-export { store, activeTabId, focusedPaneId, gitStatus };
+// C-2 — usage footer: last published token-burn snapshot. `null` until the
+// backend's first background pass finishes (never render `0` for that state).
+const [usage, setUsage] = createSignal<UsageSnapshot | null>(null);
+// Ticks while the cockpit is open so a mounted tooltip's "computed Xs ago"
+// stays live without re-fetching. Cheap: one timestamp write per second.
+const [usageNow, setUsageNow] = createSignal(Date.now());
+
+export { store, activeTabId, focusedPaneId, gitStatus, usage, usageNow };
+
+/** Seconds since the current snapshot was computed, or `null` before the first
+ *  scan pass lands. */
+export function usageAgeSec(): number | null {
+  const u = usage();
+  if (!u) return null;
+  return Math.max(0, Math.round((usageNow() - u.computedAtMs) / 1000));
+}
 
 // ── Selectors ─────────────────────────────────────────────────────────────────
 
@@ -412,6 +430,20 @@ export async function bootCockpit(): Promise<void> {
   // v1.1 — live fs-watch: reload a visible dir when the backend reports it changed.
   const unFtChange = await onFileTreeChanged((p) => ftOnChanged(p.dir));
 
+  // C-2 — usage footer: pull whatever the poller last computed (may be `null`
+  // pre-first-pass — the footer renders `—` for that), then stay live via
+  // usage:update (fired immediately by the backend, then every 45s).
+  // Listener first, then the pull: registering after would drop an update that
+  // lands mid-await, and the pull only fills a still-empty slot (`p ?? s`) so a
+  // fresher event can never be clobbered by the in-flight boot snapshot.
+  const unUsage = await onUsageUpdate((snap) => setUsage(snap));
+  void usageSnapshot()
+    .then((s) => s && setUsage((p) => p ?? s))
+    .catch((e) => console.warn("usage_snapshot failed", e));
+  // Tick the "computed Xs ago" clock every second while the cockpit is open.
+  const usageTickInterval = window.setInterval(() => setUsageNow(Date.now()), 1000);
+  const unUsageTick: UnlistenFn = () => clearInterval(usageTickInterval);
+
   unlisteners = [
     unStatus,
     unTopo,
@@ -422,6 +454,8 @@ export async function bootCockpit(): Promise<void> {
     unGit,
     unFt,
     unFtChange,
+    unUsage,
+    unUsageTick,
   ];
 }
 
