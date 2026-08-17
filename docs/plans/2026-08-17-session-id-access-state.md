@@ -117,6 +117,33 @@ flaked mid-run (`-1728`), matching the existing note that it is unreliable here.
 A session that started BEFORE the hook was installed has no entry, so its pane shows no chip until
 that session restarts. This session (`95876de8…`, pane `%56`) is in exactly that state.
 
+### MERGED + CLEANED 2026-08-17
+
+- PRs **#21 → #22 → #23 all merged**; main **`e42c56c`**, zero PRs open.
+- Post-merge main: cargo 170/0 + claude-sessions 12/0, tsc + vite clean.
+- **Parity:** building from merged main emits `index-BBN63jpG.js` — the exact asset embedded in the
+  installed `/Applications` binary. The daily driver is byte-identical to main and reproducible from
+  git; **no reinstall needed.**
+- All stray `.app` bundles deleted (3, not 1 — the onboarding worktree's was a build 3 PRs behind,
+  the triple-regression trap). `find Workflows -name 'CC Cockpit.app'` → 0 outside /Applications.
+- Merged branches pruned local+remote; repo = `main` + `feat/onboarding-wizard`. Main checkout moved
+  off the stale `integration/tabname-panes` (clean tree, content already in main) and that branch
+  deleted.
+
+### Handoff — open items
+
+| Item | Owner action |
+|---|---|
+| `Copy id` label visual confirmation | installed + running, never seen rendering. Screenshot it, or grant Screen Recording so it can be self-verified. |
+| **#21 human gate — UNRUN** | rename a tab → close it → ⌘T → the name must NOT come back. Merged without this. |
+| **#22 human gate — UNRUN** | narrow/tall window → ⌘D must give side-by-side columns, not a stack. Merged without this. |
+| `feat/onboarding-wizard` | now 3 PRs behind main — merge main in before its remaining smoke (⌘T-under-wizard, Cancel, tmux-missing, rerun-skip). |
+| Pre-existing defect (from #22's session) | at boot the focused pane can sit in a different window than the restored active tab, so ⌘D lands in the wrong window. Unrelated to any merged PR; wants its own fix. |
+
+**Deploy state: ➖ nothing unproven live.** `/ship` ran this session and PR #23 shipped (push verified
+SHA-identical, PR merged); the app is installed, running, and byte-identical to main. The single
+open verification is the `Copy id` label's pixels, listed above — not a deploy gap.
+
 ### Left for P3 (not started, owner leaning skip)
 
 Owner's use-case review: the browse/search half duplicates claude-mem + devlog. The one thing only
