@@ -152,6 +152,10 @@ pub struct PaneInfo {
     pub status: String,
     /// Whether the last classification was ambiguous (status == UNKNOWN).
     pub ambiguous: bool,
+    /// Claude session UUID running in this pane, when the `cockpit-session-map`
+    /// hook has published one. `None` for a shell pane, a pane whose claude
+    /// predates the hook being installed, or a pane running something else.
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1074,17 +1078,28 @@ impl SessionManager {
 
     fn collect_panes(&self) -> Result<Vec<PaneInfo>, String> {
         // Session-wide pane list with the fields the frontend + poller need.
+        //
+        // `#{pid}` is the tmux SERVER pid, identical for every row. It rides
+        // along here rather than costing a second `display-message` on every
+        // poll, and it is what makes a stale pane→session entry detectable:
+        // pane ids restart from %0 when a server dies, so an entry from a
+        // previous server would otherwise name the wrong session.
         let out = tmux::tmux(&[
             "list-panes",
             "-s",
             "-t",
             SESSION,
             "-F",
-            "#{pane_id}\t#{window_index}\t#{pane_current_path}\t#{pane_title}\t#{pane_dead}",
+            "#{pane_id}\t#{window_index}\t#{pane_current_path}\t#{pane_title}\t#{pane_dead}\t#{pid}",
         ])?;
         if !out.ok() {
             return Ok(vec![]);
         }
+
+        // Read once per collect, not once per pane.
+        let mut server_pid = String::new();
+        let mut session_map = std::collections::HashMap::new();
+
         let mut panes = vec![];
         for line in out.stdout.lines() {
             let mut it = line.split('\t');
@@ -1093,14 +1108,21 @@ impl SessionManager {
             let cwd = it.next().unwrap_or("").to_string();
             let title = it.next().unwrap_or("").to_string();
             let dead = it.next().unwrap_or("0") == "1";
+            let pid = it.next().unwrap_or("");
             if !is_pane_id(&pane) {
                 continue; // mangled/fused line (e.g. C-locale tab sanitization)
+            }
+            if !pid.is_empty() && pid != server_pid {
+                server_pid = pid.to_string();
+                session_map =
+                    claude_sessions::read_pane_map(&claude_sessions::pane_map_dir(), &server_pid);
             }
             let status = self
                 .last_status
                 .get(&pane)
                 .copied()
                 .unwrap_or(if dead { Status::Dead } else { Status::Unknown });
+            let session_id = session_map.get(&pane).map(|s| s.session_id.clone());
             panes.push(PaneInfo {
                 pane_id: pane,
                 tab_id: tab_id_for_index(win_index),
@@ -1109,6 +1131,7 @@ impl SessionManager {
                 dead,
                 status: status.as_str().into(),
                 ambiguous: status == Status::Unknown,
+                session_id,
             });
         }
         Ok(panes)

@@ -4,9 +4,8 @@
 // XtermHost is keyed by paneId at the call site (PaneGrid) so it stays mounted
 // for the pane's whole life and is never re-created on focus changes.
 
-import { createMemo, createSignal, Show, type Component } from "solid-js";
+import { createMemo, createSignal, onCleanup, Show, type Component } from "solid-js";
 import type { LayoutRect, PaneInfo } from "../ipc";
-import { interruptPane } from "../ipc";
 import {
   focusPane,
   doClosePane,
@@ -15,6 +14,7 @@ import {
   sendPaneToSidebar,
   paneLabel,
   directLaunchCc,
+  copySessionId,
 } from "../store";
 import { StatusBadge } from "./StatusBadge";
 import { LaunchDialog } from "./LaunchDialog";
@@ -27,8 +27,20 @@ export const Pane: Component<{
   rect?: LayoutRect;
 }> = (props) => {
   const [showLaunch, setShowLaunch] = createSignal(false);
+  // Transient "copied" acknowledgement on the session chip. The timer is owned
+  // here and cleared on unmount so a pane killed mid-flash cannot fire into a
+  // disposed component.
+  const [copied, setCopied] = createSignal(false);
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(copiedTimer));
 
-  const isWorking = () => props.pane.status === "WORKING";
+  async function doCopySessionId(sessionId: string) {
+    await copySessionId(sessionId);
+    setCopied(true);
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => setCopied(false), 1200);
+  }
+
   // "fresh" panes (a bare shell, not yet running CC) are the launch targets.
   const canLaunch = () =>
     !props.pane.dead &&
@@ -78,18 +90,26 @@ export const Pane: Component<{
           </button>
         </Show>
 
-        <button
-          class="tb-btn"
-          classList={{ active: isWorking() }}
-          title="Interrupt (Ctrl+C)"
-          disabled={!isWorking()}
-          onClick={(e) => {
-            e.stopPropagation();
-            void interruptPane(props.pane.paneId).catch(() => {});
-          }}
-        >
-          Interrupt
-        </button>
+        {/* Claude session id. Rendered only once the cockpit-session-map hook
+            has published one for this pane, so a shell pane shows nothing
+            rather than an empty slot. The button says what it DOES; the id
+            itself lives in the tooltip, since a uuid prefix in the toolbar is
+            noise you cannot act on. Click copies the FULL uuid. */}
+        <Show when={props.pane.sessionId}>
+          {(sessionId) => (
+            <button
+              class="tb-btn tb-session"
+              classList={{ copied: copied() }}
+              title={`Claude session ${sessionId()} — click to copy`}
+              onClick={(e) => {
+                e.stopPropagation();
+                void doCopySessionId(sessionId());
+              }}
+            >
+              {copied() ? "copied" : "Copy id"}
+            </button>
+          )}
+        </Show>
 
         <Show when={activePanes().length > 1}>
           <button

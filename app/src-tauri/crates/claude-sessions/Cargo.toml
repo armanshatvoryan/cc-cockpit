@@ -1,0 +1,22 @@
+[package]
+name = "claude-sessions"
+version = "0.1.0"
+edition = "2021"
+description = "Claude Code session discovery: tmux-pane → session-id map, plus a transcript index over ~/.claude/projects."
+
+[lib]
+name = "claude_sessions"
+path = "src/lib.rs"
+
+# The `cc-sessions` CLI. Lives in THIS crate, not the tauri package, so it
+# builds without linking the GUI — and so the pane-map / index logic has exactly
+# one implementation shared by the CLI and the Tauri commands.
+[[bin]]
+name = "cc-sessions"
+path = "src/bin/cc-sessions.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]

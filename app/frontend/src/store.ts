@@ -1986,6 +1986,10 @@ async function copyText(t: string): Promise<void> {
     }
   }
 }
+/** Copy a pane's Claude session id. Shares the WKWebView-safe path above. */
+export function copySessionId(sessionId: string): Promise<void> {
+  return copyText(sessionId);
+}
 /** Copy Path = absolute. */
 export function ftCopyPath(path: string): void {
   void copyText(path);

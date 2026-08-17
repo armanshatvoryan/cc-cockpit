@@ -30,6 +30,10 @@ export interface PaneInfo {
   dead: boolean;
   status: PaneStatus;
   ambiguous: boolean;
+  /** Claude session UUID in this pane, once the `cockpit-session-map` hook has
+   *  published it. Absent for a shell pane, or for a claude that started before
+   *  the hook was installed. */
+  sessionId?: string;
 }
 
 /** One pane's rectangle in tmux cell space (parsed from `window_layout`). */

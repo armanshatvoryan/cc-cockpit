@@ -318,6 +318,7 @@ name = "cc-cockpit"
 version = "0.1.5"
 dependencies = [
  "base64 0.22.1",
+ "claude-sessions",
  "cockpit-control-mode",
  "cockpit-engine",
  "ignore",
@@ -375,6 +376,14 @@ dependencies = [
  "num-traits",
  "serde",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "claude-sessions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
