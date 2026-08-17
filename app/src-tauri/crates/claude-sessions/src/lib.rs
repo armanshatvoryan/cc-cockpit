@@ -19,9 +19,59 @@
 //! authoritative, and the directory name is kept only as an opaque grouping key.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// `$CLAUDE_CONFIG_DIR`, else `~/.claude`. Matches how the hook resolves it, so
+/// the two halves cannot disagree about where the map lives.
+pub fn claude_config_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".claude")
+}
+
+/// Where session transcripts live.
+pub fn projects_root() -> PathBuf {
+    claude_config_dir().join("projects")
+}
+
+/// Where the hook publishes pane→session entries.
+pub fn pane_map_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("COCKPIT_SESSION_MAP_DIR") {
+        return PathBuf::from(dir);
+    }
+    claude_config_dir().join("cockpit-sessions")
+}
+
+/// PID of the tmux server owning this process, from field 2 of `$TMUX`.
+pub fn tmux_server_pid() -> Option<String> {
+    let tmux = std::env::var("TMUX").ok()?;
+    let pid = tmux.split(',').nth(1)?;
+    if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(pid.to_string())
+}
+
+/// This process's tmux pane (`%56`), validated to tmux's own shape.
+pub fn current_tmux_pane() -> Option<String> {
+    let pane = std::env::var("TMUX_PANE").ok()?;
+    let digits = pane.strip_prefix('%')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(pane)
+}
+
+/// The session running in this pane, if the hook has published it.
+pub fn current_session() -> Option<PaneSession> {
+    let pane = current_tmux_pane()?;
+    let pid = tmux_server_pid()?;
+    read_pane_map(&pane_map_dir(), &pid).remove(&pane)
+}
 
 /// One pane→session entry, as written by the hook.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
