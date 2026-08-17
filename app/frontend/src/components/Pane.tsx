@@ -92,8 +92,9 @@ export const Pane: Component<{
 
         {/* Claude session id. Rendered only once the cockpit-session-map hook
             has published one for this pane, so a shell pane shows nothing
-            rather than an empty slot. Click copies the FULL uuid — the label is
-            the short form purely so it fits the toolbar. */}
+            rather than an empty slot. The button says what it DOES; the id
+            itself lives in the tooltip, since a uuid prefix in the toolbar is
+            noise you cannot act on. Click copies the FULL uuid. */}
         <Show when={props.pane.sessionId}>
           {(sessionId) => (
             <button
@@ -105,7 +106,7 @@ export const Pane: Component<{
                 void doCopySessionId(sessionId());
               }}
             >
-              {copied() ? "copied" : `⧉ ${sessionId().slice(0, 8)}`}
+              {copied() ? "copied" : "Copy id"}
             </button>
           )}
         </Show>
