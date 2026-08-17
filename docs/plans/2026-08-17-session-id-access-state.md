@@ -89,13 +89,28 @@ Security: `list_claude_sessions` takes no path from the frontend; project filter
 | CLI works on real data | 1584 transcripts indexed in 66ms; `cc-sessions` live on PATH |
 | **hook fires on real sessions** | watched `~/.claude/cockpit-sessions/` during a real `claude -p` run: entry appeared on SessionStart, vanished on SessionEnd. Also captured live cockpit panes `1497-0`, `1497-54`. |
 
-### NOT yet proven — the remaining gate
+### Smoke: PASSED 2026-08-17
 
-**The toolbar chip has never been seen rendering.** Launching a dev cockpit would attach a second
-control client to the same `-L cockpit` socket and `cockpit-main` session, renegotiating window
-size and visibly disturbing the live session the owner is working in (this very session runs in
-pane `%56` of that server). `tmux::SOCKET` is a hardcoded const with no override, so there is no
-isolated way to launch it. **Owner call required before the smoke launch.**
+Built the COMBINED branch (`integration/tabname-panes` + this one) so the parallel session's PR #21
+tab-name fix and PR #22 two-panes fix were not clobbered by the install. Clean merge; cargo 170/0,
+tsc + vite clean.
+
+Installed via the app-bundle flow (`--bundles app`, never dmg -- a dmg run clobbers /Applications):
+quit -> ditto -> re-sign -> bust WebKit cache -> open by explicit path. Asset-hash fingerprint
+confirmed the installed binary each time.
+
+**Owner screenshot confirmed the chip rendering** on pane `%54` next to `Launch CC`, with Interrupt
+absent -- the last unproven piece. Panes survived both reinstalls (a 42-minute MRA run included),
+re-confirming `teardown()` is smoke-binary-only.
+
+Owner feedback on seeing it: the button should say what it DOES, not show a uuid prefix you cannot
+act on. Label is now `Copy id` -> `copied`; the full id lives in the tooltip and on the clipboard.
+
+🔑 **I could not screenshot it myself** -- `screencapture` returns the desktop wallpaper with no
+window contents (missing Screen Recording permission for the terminal process), and `-l <windowid>`
+fails with "could not create image from window". CGWindowList still reports true window geometry, so
+that is the reliable way to check whether the app has real windows. GUI scripting on this app also
+flaked mid-run (`-1728`), matching the existing note that it is unreliable here.
 
 ### Known limitation (by design)
 
