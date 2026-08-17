@@ -563,10 +563,11 @@ let gridTimer: number | undefined;
 // window, not global: two tabs with identical geometry still each need their
 // own push (root cause #6/#8, 2026-07-20).
 const lastGridKeyByWindow = new Map<string, string>();
-// Per tmux WINDOW, the pane count seen at the last push. `select-layout tiled`
-// fires only when the count GREW (a new pane appeared) — a resize, tab switch,
-// boot, or pane close is pushed resize-only, so tmux scales the existing
-// arrangement proportionally instead of flattening it.
+// Per tmux WINDOW, the pane count seen at the last push. A re-balancing
+// `select-layout` (`tiled`, or `even-horizontal` at exactly 2 panes) fires only
+// when the count CHANGED — a resize, tab switch, or boot is pushed resize-only,
+// so tmux scales the existing arrangement proportionally instead of flattening
+// it.
 const lastPaneCountByWindow = new Map<string, number>();
 // Windows the user arranged by hand (⌘D/⌘⇧D split). Never auto-tiled again —
 // even when external splits later add panes (e.g. an agent team spawning) the
@@ -718,10 +719,19 @@ async function pushGrid(): Promise<void> {
   // Everything else (resize, boot, tab switch) — and EVERYTHING on a manually
   // arranged window — is pushed resize-only ("none"): tmux scales the existing
   // layout proportionally, so a ⌘D/⌘⇧D split is never flattened into a grid.
+  //
+  // At exactly TWO panes the re-balance is "even-horizontal", not "tiled": tmux
+  // lays 2 tiled panes out along the window's shape, so a tall window stacked
+  // them (probed: 60×100 window, tiled ⇒ 60×49 over 60×50; even-horizontal ⇒
+  // 30×100 beside 29×100). Two panes are always a pair of columns.
   const prevCount = lastPaneCountByWindow.get(windowId);
   const countChanged = prevCount !== undefined && n !== prevCount;
   const layout =
-    countChanged && !manualLayoutWindows.has(windowId) ? "tiled" : "none";
+    countChanged && !manualLayoutWindows.has(windowId)
+      ? n === 2
+        ? "even-horizontal"
+        : "tiled"
+      : "none";
   const epoch = gridRejectEpoch;
   try {
     await setGrid(windowId, winCols, winRows, layout);
@@ -848,9 +858,15 @@ export async function requestCloseTab(
  * window splits into columns first; each (now taller-than-wide) half then
  * stacks — repeated ⌘D distributes evenly instead of piling up skinny columns.
  * Compared in px (tmux cells × measured cell px), since a char cell is ~2×
- * taller than wide; falls back to "h" while geometry/cell px are unknown. */
+ * taller than wide; falls back to "h" while geometry/cell px are unknown.
+ *
+ * EXCEPTION — the FIRST split of a window is always "h", whatever the aspect: a
+ * pair of panes reads as two columns (and `paneGridShape` already budgets chrome
+ * for 2 cols × 1 row at n=2). Without this a tall/narrow window stacked its
+ * first ⌘D. ⌘⇧D is unaffected: it passes "v" explicitly and never comes here. */
 function autoSplitDir(paneId: string): "h" | "v" {
   const tab = store.tabs.find((t) => t.paneIds.includes(paneId));
+  if (tab && panesForTab(tab.tabId).length <= 1) return "h";
   const rect = tab?.geometry?.rects.find((r) => r.paneId === paneId);
   const cell = cellPx();
   if (!rect || !cell) return "h";
