@@ -36,7 +36,7 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
   const needsInput = () => tabNeedsInputCount(props.tab);
   // dev#2 — git status of this tab's first-pane cwd (null/absent ⇒ git extras
   // hidden; the badge itself shows the cwd folder and needs no repo).
-  const git = () => gitStatus[props.tab.tabId];
+  const git = () => gitStatus[props.tab.tmuxWindowId];
   const folder = () => tabFolderName(props.tab);
   const badgeTitle = () => {
     const g = git();
@@ -54,7 +54,7 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
   }
   function commitRename() {
     const name = draft().trim();
-    if (name) renameTabLocal(props.tab.tabId, name);
+    if (name) renameTabLocal(props.tab.tmuxWindowId, name);
     setEditing(false);
   }
 

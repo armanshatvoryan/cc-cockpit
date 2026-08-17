@@ -271,6 +271,9 @@ export interface GitStatus {
 export interface TabLayout {
   index: number;
   cwd: string;
+  /** tmux window id (`@<n>`) — the STABLE restore key. Absent in snapshots
+   *  written before this field existed; those fall back to (index, cwd). */
+  windowId?: string | null;
   customTitle?: string | null;
 }
 
