@@ -74,4 +74,35 @@ Security: `list_claude_sessions` takes no path from the frontend; project filter
 
 ## Status
 
-- 2026-08-17: investigation done, all seams verified, plan written. **Awaiting owner go before first edit.**
+- 2026-08-17: investigation done, all seams verified, plan written. Owner: **P1+P2 together**, Interrupt **deleted**.
+- 2026-08-17: **P1 + P2 code complete on `feat/session-id-access`.** 4 commits. Installed and live.
+
+### Proven
+
+| Claim | How |
+|---|---|
+| lib logic correct | 12 Rust unit tests, written first, observed failing |
+| hook correct | 11 shell tests, written first, observed failing |
+| CLI correct | 10 shell tests, incl. a cross-language E2E (real hook writes → real Rust reader reads) |
+| no regression | `cargo test -p cc-cockpit` 169 passed / 0 failed |
+| frontend sound | `tsc --noEmit` clean, `vite build` clean |
+| CLI works on real data | 1584 transcripts indexed in 66ms; `cc-sessions` live on PATH |
+| **hook fires on real sessions** | watched `~/.claude/cockpit-sessions/` during a real `claude -p` run: entry appeared on SessionStart, vanished on SessionEnd. Also captured live cockpit panes `1497-0`, `1497-54`. |
+
+### NOT yet proven — the remaining gate
+
+**The toolbar chip has never been seen rendering.** Launching a dev cockpit would attach a second
+control client to the same `-L cockpit` socket and `cockpit-main` session, renegotiating window
+size and visibly disturbing the live session the owner is working in (this very session runs in
+pane `%56` of that server). `tmux::SOCKET` is a hardcoded const with no override, so there is no
+isolated way to launch it. **Owner call required before the smoke launch.**
+
+### Known limitation (by design)
+
+A session that started BEFORE the hook was installed has no entry, so its pane shows no chip until
+that session restarts. This session (`95876de8…`, pane `%56`) is in exactly that state.
+
+### Left for P3 (not started, owner leaning skip)
+
+Owner's use-case review: the browse/search half duplicates claude-mem + devlog. The one thing only
+P3 can do is **one-click resume into a cockpit pane**. Decide after living with the chip.
