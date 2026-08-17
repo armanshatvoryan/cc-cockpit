@@ -38,6 +38,9 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Pane -> Claude-session mapping + transcript index. A plain workspace crate
+# (no tauri linkage) so the `cc-sessions` CLI shares this exact implementation.
+claude-sessions = { path = "crates/claude-sessions" }
 base64 = "0.22"
 # File-tree sidebar (v1.1): .gitignore-aware directory walking (same engine as
 # ripgrep) so node_modules/target/.git never reach the tree or the fs-watcher.

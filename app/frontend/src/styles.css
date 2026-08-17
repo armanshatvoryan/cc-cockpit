@@ -568,6 +568,20 @@ button {
   border-color: var(--accent);
   color: var(--accent-fg);
 }
+/* Claude session id chip. Monospace so a uuid prefix stays scannable, and a
+   fixed width so the "copied" acknowledgement does not resize the toolbar and
+   shuffle the buttons beside it. */
+.tb-session {
+  font-family: var(--mono);
+  color: var(--fg-faint);
+  width: 78px;
+  padding: 0;
+  text-align: center;
+}
+.tb-session.copied {
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
 .tb-danger {
   width: 19px;
   padding: 0;
