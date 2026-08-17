@@ -6,7 +6,7 @@
 # `cc-cockpit` package below.
 [workspace]
 resolver = "2"
-members = ["crates/control-mode", "crates/engine"]
+members = ["crates/control-mode", "crates/engine", "crates/claude-sessions"]
 
 [package]
 name = "cc-cockpit"
