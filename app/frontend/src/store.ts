@@ -108,10 +108,15 @@ const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
 const [focusedPaneId, setFocusedPaneId] = createSignal<string | null>(null);
 
 // Local-only tab display-name overrides (v1 rename is client-side only).
+// Keyed by the STABLE tmux window id (`@<n>`), NEVER by `tabId` — `tabId` encodes
+// the mutable window index, which tmux reuses for new windows, so an index key
+// makes a fresh tab inherit the name of a closed one that held that index.
 const [tabNameOverrides, setTabNameOverrides] = createStore<Record<string, string>>({});
 
-// dev#2 — per-tab git status of its first-pane cwd. `null` = cwd isn't a repo;
-// absent key = not yet polled. Only the ACTIVE tab is refreshed (cheap).
+// dev#2 — per-tab git status of its first-pane cwd, keyed by the STABLE tmux
+// window id (same reason as `tabNameOverrides`: index keys collide across a
+// close+open). `null` = cwd isn't a repo; absent key = not yet polled. Only the
+// ACTIVE tab is refreshed (cheap).
 const [gitStatus, setGitStatus] = createStore<Record<string, GitStatus | null>>({});
 
 // C-2 — usage footer: last published token-burn snapshot. `null` until the
@@ -165,7 +170,7 @@ export function activePanes(): PaneInfo[] {
 
 /** Display name for a tab (local override wins over backend window name). */
 export function tabDisplayName(tab: TabInfo): string {
-  return tabNameOverrides[tab.tabId] ?? (tab.name || tab.tabId);
+  return tabNameOverrides[tab.tmuxWindowId] ?? (tab.name || tab.tabId);
 }
 
 /** First-pane cwd for a tab, "" when no pane / cwd yet. */
@@ -216,6 +221,26 @@ function reconcile(next: CockpitState): void {
   // so a plain replace is correct here — the keyed reconcile above exists only to
   // protect tab/pane object identity.
   setStore("stored", next.stored ?? []);
+
+  // Drop rename overrides whose window is gone. tmux ids are unique per server,
+  // so a dead key can never be hit again — but a window closed OUTSIDE the
+  // cockpit (shell `exit`, `tmux kill-window`) never runs the close path, and an
+  // unbounded map is one more thing to get wrong. STORED windows keep theirs:
+  // they left `tabs` but are still live and can be unstored back into a tab.
+  const liveWindowIds = new Set([
+    ...next.tabs.map((t) => t.tmuxWindowId),
+    ...(next.stored ?? []).map((s) => s.windowId),
+  ]);
+  setTabNameOverrides(
+    produce((o: Record<string, string>) => {
+      for (const key of Object.keys(o)) if (!liveWindowIds.has(key)) delete o[key];
+    }),
+  );
+  setGitStatus(
+    produce((o: Record<string, GitStatus | null>) => {
+      for (const key of Object.keys(o)) if (!liveWindowIds.has(key)) delete o[key];
+    }),
+  );
 
   // Repair active tab: keep if still present, else first tab, else null. A window
   // that was just STORED left `tabs` entirely, so this also moves the UI off a
@@ -324,7 +349,12 @@ function clearAttention(): void {
 function buildLayoutSnapshot(): LayoutSnapshot {
   const tabs: TabLayout[] = store.tabs.map((t) => {
     const cwd = store.panes.find((p) => p.paneId === t.paneIds[0])?.cwd ?? "";
-    return { index: t.index, cwd, customTitle: tabNameOverrides[t.tabId] ?? null };
+    return {
+      index: t.index,
+      cwd,
+      windowId: t.tmuxWindowId,
+      customTitle: tabNameOverrides[t.tmuxWindowId] ?? null,
+    };
   });
   return { schemaVersion: 1, activeTabId: activeTabId(), tabs };
 }
@@ -347,12 +377,14 @@ async function restoreLayout(): Promise<void> {
     if (!saved) return;
     for (const tl of saved.tabs) {
       if (!tl.customTitle) continue;
-      const liveTab = store.tabs.find(
-        (t) =>
-          t.index === tl.index &&
-          store.panes.find((p) => p.paneId === t.paneIds[0])?.cwd === tl.cwd,
-      );
-      if (liveTab) renameTabLocal(liveTab.tabId, tl.customTitle);
+      // Match on the STABLE window id ONLY. The old (index, cwd) match is not a
+      // safe fallback: tmux recycles window indexes, so a pre-fix row can land a
+      // dead tab's title on an unrelated new window — and the next save would
+      // then cement that wrong title against the new window id. Rows written
+      // before `windowId` existed are therefore dropped (titles reset once).
+      if (!tl.windowId) continue;
+      const liveTab = store.tabs.find((t) => t.tmuxWindowId === tl.windowId);
+      if (liveTab) renameTabLocal(liveTab.tmuxWindowId, tl.customTitle);
     }
     if (saved.activeTabId && store.tabs.some((t) => t.tabId === saved.activeTabId)) {
       setActiveTabId(saved.activeTabId);
@@ -373,7 +405,7 @@ async function refreshActiveGitStatus(): Promise<void> {
   const cwd = store.panes.find((p) => p.paneId === tab.paneIds[0])?.cwd;
   if (!cwd) return;
   try {
-    setGitStatus(tab.tabId, await gitStatusSnapshot(cwd));
+    setGitStatus(tab.tmuxWindowId, await gitStatusSnapshot(cwd));
   } catch {
     /* git missing / transient — keep the last known badge */
   }
@@ -834,8 +866,8 @@ export async function requestCloseTab(
       return { needsConfirm: true, livePanes: res.livePanes };
     }
     await refreshState();
-    persistLayout(); // dev#1 — tab set changed (stale gitStatus keys are never
-    // read: chips only render for live tabs, so no cleanup needed)
+    persistLayout(); // dev#1 — tab set changed. Per-tab side maps (name override,
+    // gitStatus) are pruned by `reconcile`, which the `refreshState` above ran.
     return { needsConfirm: false, livePanes: [] };
   } catch (e) {
     setStore("error", `close_tab failed: ${String(e)}`);
@@ -905,8 +937,11 @@ export async function closeFocusedPaneOrTab(): Promise<void> {
   }
 }
 
-export function renameTabLocal(tabId: string, name: string): void {
-  setTabNameOverrides(tabId, name);
+/** Set a tab's local display name. Keyed by the STABLE tmux window id so the
+ *  name dies with the window instead of being inherited by whatever new window
+ *  tmux later parks on the same index. */
+export function renameTabLocal(windowId: string, name: string): void {
+  setTabNameOverrides(windowId, name);
   persistLayout(); // dev#1 — local rename is part of the persisted layout
 }
 

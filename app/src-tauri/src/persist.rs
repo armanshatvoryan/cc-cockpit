@@ -31,8 +31,13 @@ const SCHEMA_VERSION: u32 = 1;
 pub struct TabLayout {
     /// 0-based position in the tab strip.
     pub index: u32,
-    /// First-pane cwd — used to match a persisted tab to a live tab on restore.
+    /// First-pane cwd — legacy match key, used only when `window_id` is absent.
     pub cwd: String,
+    /// tmux window id (`@<n>`) — the STABLE key a restore matches on. Window
+    /// INDEXES are recycled by tmux, so matching on index made a new tab inherit
+    /// a closed tab's title. Absent in snapshots written before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<String>,
     /// User-renamed title, if any. Absent ⇒ engine/default name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_title: Option<String>,
@@ -111,11 +116,13 @@ mod tests {
                 TabLayout {
                     index: 0,
                     cwd: "/repo/a".into(),
+                    window_id: Some("@4".into()),
                     custom_title: Some("Alpha".into()),
                 },
                 TabLayout {
                     index: 1,
                     cwd: "/repo/b".into(),
+                    window_id: Some("@9".into()),
                     custom_title: None,
                 },
             ],
@@ -145,6 +152,7 @@ mod tests {
             tabs: vec![TabLayout {
                 index: 0,
                 cwd: "/x".into(),
+                window_id: Some("@1".into()),
                 custom_title: Some("T".into()),
             }],
         };
@@ -152,6 +160,7 @@ mod tests {
         assert!(json.contains("\"schemaVersion\""), "json: {json}");
         assert!(json.contains("\"activeTabId\""), "json: {json}");
         assert!(json.contains("\"customTitle\""), "json: {json}");
+        assert!(json.contains("\"windowId\""), "json: {json}");
     }
 
     #[test]
@@ -162,5 +171,15 @@ mod tests {
         let snap: LayoutSnapshot = serde_json::from_str(json).unwrap();
         assert_eq!(snap.active_tab_id, None);
         assert_eq!(snap.tabs[0].custom_title, None);
+    }
+
+    #[test]
+    fn legacy_snapshot_without_window_id_still_loads() {
+        // Files written before `windowId` existed must keep loading (the frontend
+        // falls back to the old (index, cwd) match for exactly these rows).
+        let json = r#"{"schemaVersion":1,"tabs":[{"index":2,"cwd":"/x","customTitle":"Zorik"}]}"#;
+        let snap: LayoutSnapshot = serde_json::from_str(json).unwrap();
+        assert_eq!(snap.tabs[0].window_id, None);
+        assert_eq!(snap.tabs[0].custom_title.as_deref(), Some("Zorik"));
     }
 }
