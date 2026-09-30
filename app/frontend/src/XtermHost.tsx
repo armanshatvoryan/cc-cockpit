@@ -130,15 +130,16 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     // repaint bytes land in a wrong-sized buffer, and a differential renderer
     // like Claude Code never repaints them again — the garble sticks until a
     // manual Ctrl+L. tmux's own grid is clean the whole time, so the repair is
-    // to replay it: wait for the pane to go quiet, capture the visible grid
+    // to replay it: wait for the pane to go quiet, capture history + visible grid
     // (`warm_start_screen`, cursor restored), clear, write.
     //
     // This is NOT iteration #5 coming back: no keystroke injection (root
     // cause #7), pane-scoped (only a pane whose size actually CHANGED, never
     // a broadcast), quiescence-gated with a dirty-retry (root cause #3), and
-    // the capture is visible-grid-only (the old full-scrollback replay was
-    // root cause #6). Cost: the clear (2J/3J) drops this pane's local
-    // scrollback on an actual resize — accepted (owner ruling 2026-08-12).
+    // the visible grid is split exactly from history (the old unsplit
+    // full-scrollback replay was root cause #6). The clear (2J/3J) drops this
+    // pane's local scrollback, so the capture carries tmux's history back in —
+    // otherwise a resized pane can no longer scroll up.
     let disposed = false;
     const RESYNC_DEBOUNCE_MS = 300; // drag storms collapse into one resync
     const RESYNC_QUIET_MS = 250; // pane output must be quiet this long

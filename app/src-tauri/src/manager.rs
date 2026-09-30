@@ -1303,7 +1303,20 @@ impl SessionManager {
     /// from tmux's grid and — for a differential renderer like Claude Code —
     /// stays diverged until a full repaint. tmux's own grid is clean (= what
     /// Ctrl+L shows); this replays exactly that, without keystroke injection.
+    ///
+    /// The resync clears xterm's scrollback (3J), so the replay carries tmux's
+    /// history too — split from the grid exactly like the mount warm start —
+    /// or a resized pane could no longer be scrolled up. Without a geometry
+    /// reply the split can't be trusted, so that path stays grid-only.
     pub fn warm_start_screen(&self, pane_id: &str) -> Result<String, String> {
+        if let Some(v) = pane_numbers(pane_id, "#{pane_height} #{cursor_x} #{cursor_y}", 3) {
+            let out = tmux::tmux(&["capture-pane", "-p", "-e", "-S", "-", "-t", pane_id])?;
+            if !out.ok() {
+                return Err(out.stderr.trim().to_string());
+            }
+            let replay = compose_warm_start(&out.stdout, v[0] as usize, Some((v[1], v[2])));
+            return Ok(B64.encode(replay.as_bytes()));
+        }
         let out = tmux::tmux(&["capture-pane", "-p", "-e", "-t", pane_id])?;
         if !out.ok() {
             return Err(out.stderr.trim().to_string());

@@ -305,11 +305,11 @@ fn warm_start(state: State<'_, AppState>, pane_id: String) -> Result<WarmStartPa
     Ok(WarmStartPayload { bytes_b64 })
 }
 
-/// Visible-grid-only replay with cursor restore, for the post-resize resync
-/// (bug #11, revisit garble). A single-shot window resize makes the pane's TUI
-/// repaint into an xterm still at its old size; the diverged buffer is repaired
-/// by replaying tmux's clean visible grid (= what Ctrl+L shows) — no scrollback,
-/// no keystroke injection.
+/// History + visible-grid replay with cursor restore, for the post-resize
+/// resync (bug #11, revisit garble). A single-shot window resize makes the
+/// pane's TUI repaint into an xterm still at its old size; the diverged buffer
+/// is repaired by replaying tmux's clean grid (= what Ctrl+L shows) with its
+/// history above it, so the pane stays scrollable — no keystroke injection.
 #[tauri::command]
 fn warm_start_screen(
     state: State<'_, AppState>,
