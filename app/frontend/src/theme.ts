@@ -17,6 +17,7 @@
 // it must be readable synchronously at module load.
 
 import { createSignal } from "solid-js";
+import { setTermColors } from "./ipc";
 
 export type ThemeName = "dark" | "light";
 
@@ -52,6 +53,7 @@ export function setTheme(next: ThemeName): void {
   } catch {
     // Private mode / storage disabled: the theme still applies for this run.
   }
+  syncTmuxColors();
 }
 
 export function toggleTheme(): void {
@@ -142,3 +144,17 @@ const LIGHT_TERM: TermPalette = {
 export function termPalette(): TermPalette {
   return theme() === "light" ? LIGHT_TERM : DARK_TERM;
 }
+
+/** Push the terminal fg/bg to tmux. tmux answers OSC 10/11 colour queries
+ *  itself and, with a control-mode client, can't learn our colours — it says
+ *  black, and Codex then draws a dark input box with dark text on the light
+ *  theme. Programs read the answer at startup, so one already running keeps
+ *  its old guess until restarted. Best-effort: a failure only costs that. */
+function syncTmuxColors(): void {
+  const p = termPalette();
+  setTermColors(p.foreground, p.background).catch(() => {});
+}
+
+// On import too: the backend stores the pair and applies it when
+// `cockpit_init` brings the tmux server up.
+syncTmuxColors();
