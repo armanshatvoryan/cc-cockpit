@@ -836,7 +836,7 @@ export function switchTabByIndex(idx: number): void {
   if (tab) switchTab(tab.tabId);
 }
 
-export async function newTab(name?: string): Promise<void> {
+export async function newTab(name?: string): Promise<string | null> {
   try {
     const res = await createTab(name);
     // Topology event will reconcile; but switch eagerly for snappy UX.
@@ -848,8 +848,30 @@ export async function newTab(name?: string): Promise<void> {
     setFocusedPaneId(res.paneId);
     void refreshActiveGitStatus(); // dev#2 — badge the freshly created tab
     persistLayout(); // dev#1
+    return res.paneId;
   } catch (e) {
     setStore("error", `create_tab failed: ${String(e)}`);
+    return null;
+  }
+}
+
+/**
+ * Windows laptop over Tailscale SSH (`Host win` in ~/.ssh/config). "claude"
+ * runs the `winai` zsh alias (Claude Code in the laptop's AI folder); "shell"
+ * is a plain PowerShell session. Both open in a fresh tab.
+ */
+const WINDOWS_COMMANDS = {
+  claude: "source ~/.zshrc && winai",
+  shell: "ssh win",
+} as const;
+
+export async function openWindowsTab(kind: keyof typeof WINDOWS_COMMANDS): Promise<void> {
+  const paneId = await newTab(kind === "claude" ? "win-claude" : "win-shell");
+  if (!paneId) return;
+  try {
+    await paneRunLine(paneId, WINDOWS_COMMANDS[kind]);
+  } catch (e) {
+    setStore("error", `windows launch failed: ${String(e)}`);
   }
 }
 

@@ -24,7 +24,47 @@ import {
   tabFolderName,
   tabNeedsInputCount,
   gitStatus,
+  openWindowsTab,
 } from "../store";
+
+// Windows-laptop launcher: logo button -> menu (Claude Code / plain PowerShell),
+// each opening a new tab that SSHes to `win`.
+const WindowsButton: Component = () => {
+  const [open, setOpen] = createSignal(false);
+  const pick = (kind: "claude" | "shell") => {
+    setOpen(false);
+    void openWindowsTab(kind);
+  };
+  return (
+    <div class="win-launch">
+      <button
+        class="tab-new win-btn"
+        classList={{ "win-btn-on": open() }}
+        title="Windows laptop"
+        aria-label="Windows laptop"
+        onClick={() => setOpen(!open())}
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="0" y="0" width="7.5" height="7.5" fill="currentColor" />
+          <rect x="8.5" y="0" width="7.5" height="7.5" fill="currentColor" />
+          <rect x="0" y="8.5" width="7.5" height="7.5" fill="currentColor" />
+          <rect x="8.5" y="8.5" width="7.5" height="7.5" fill="currentColor" />
+        </svg>
+      </button>
+      <Show when={open()}>
+        <div class="ft-menu-backdrop" onClick={() => setOpen(false)} />
+        <div class="win-menu">
+          <button class="ft-menu-item" onClick={() => pick("claude")}>
+            Claude Code on Windows
+          </button>
+          <button class="ft-menu-item" onClick={() => pick("shell")}>
+            PowerShell on Windows
+          </button>
+        </div>
+      </Show>
+    </div>
+  );
+};
 
 const TabChip: Component<{ tab: TabInfo }> = (props) => {
   const [editing, setEditing] = createSignal(false);
@@ -169,6 +209,7 @@ export const TabBar: Component = () => {
       <button class="tab-new" title="New tab (⌘T)" onClick={() => void newTab()}>
         +
       </button>
+      <WindowsButton />
     </div>
   );
 };
