@@ -216,6 +216,7 @@ pub fn ensure_healthy_session() -> Result<(), String> {
     for _ in 0..3 {
         let _ = ensure_session();
         if server_healthy() {
+            apply_term_colors();
             return Ok(());
         }
         reset_server();
@@ -223,9 +224,73 @@ pub fn ensure_healthy_session() -> Result<(), String> {
     }
     ensure_session()?;
     if server_healthy() {
+        apply_term_colors();
         Ok(())
     } else {
         Err("cockpit tmux server is unhealthy after reset attempts".into())
+    }
+}
+
+/// The terminal's current (foreground, background), as last pushed by the
+/// frontend theme. `None` until the first push.
+///
+/// Why tmux needs them: programs that detect the terminal background (Codex
+/// shades its input box from it) ask with an OSC 10/11 query. tmux answers
+/// that query ITSELF, before the outer terminal ever sees it — and a control-
+/// mode client can't report its colours, so tmux falls back to black. On the
+/// light theme that makes Codex draw a dark box with dark text. Setting
+/// `window-style` gives tmux the real colours to answer with. It does not
+/// change what cockpit renders: xterm draws `%output`, not tmux's screen.
+///
+/// Process-global for the same reason as `CONFIGURED_CWD`: the frontend push
+/// and the boot/re-heal path (`ensure_healthy_session`) both need it, and a
+/// freshly created server must get the colours again.
+static TERM_COLORS: RwLock<Option<(String, String)>> = RwLock::new(None);
+
+/// `#rrggbb` and nothing else. The colours arrive over IPC and land on a tmux
+/// command line, so the charset is the whole defence.
+pub fn is_hex_color(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The `window-style` value for a colour pair, or an error if either colour is
+/// not a plain `#rrggbb`.
+pub fn window_style_value(fg: &str, bg: &str) -> Result<String, String> {
+    if !is_hex_color(fg) || !is_hex_color(bg) {
+        return Err(format!("invalid terminal colours: fg={fg:?} bg={bg:?}"));
+    }
+    Ok(format!("fg={fg},bg={bg}"))
+}
+
+/// Record the terminal colours and apply them to the live server. Validation
+/// failures are errors; a missing server is not — `ensure_healthy_session`
+/// applies the stored pair once the server exists.
+pub fn set_term_colors(fg: &str, bg: &str) -> Result<(), String> {
+    window_style_value(fg, bg)?;
+    {
+        let mut guard = match TERM_COLORS.write() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = Some((fg.to_string(), bg.to_string()));
+    }
+    apply_term_colors();
+    Ok(())
+}
+
+/// Push the stored colours to tmux as the global `window-style`. Best-effort:
+/// with no server running the call fails and the next heal retries it. Global
+/// (`-g`) is safe here, unlike `window-size` — checked on a throwaway socket
+/// that `new-window` and `split-window` still work after it.
+pub fn apply_term_colors() {
+    let colors = match TERM_COLORS.read() {
+        Ok(g) => g.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    if let Some((fg, bg)) = colors {
+        if let Ok(style) = window_style_value(&fg, &bg) {
+            let _ = tmux(&["set-option", "-g", "window-style", &style]);
+        }
     }
 }
 
@@ -249,6 +314,36 @@ pub fn shq(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_color_accepts_only_six_digit_hash_form() {
+        assert!(is_hex_color("#ffffff"));
+        assert!(is_hex_color("#1B1F27"));
+        assert!(!is_hex_color("ffffff"));
+        assert!(!is_hex_color("#fff"));
+        assert!(!is_hex_color("#gggggg"));
+        assert!(!is_hex_color("#ffffff0"));
+        assert!(!is_hex_color("#fffff,"));
+        assert!(!is_hex_color(""));
+    }
+
+    #[test]
+    fn window_style_value_builds_tmux_style_string() {
+        assert_eq!(
+            window_style_value("#1b1f27", "#ffffff").unwrap(),
+            "fg=#1b1f27,bg=#ffffff"
+        );
+    }
+
+    #[test]
+    fn window_style_value_rejects_injection() {
+        // The colours come over IPC; anything but a plain hex colour must never
+        // reach the tmux command line (e.g. a `,` smuggling extra style attrs
+        // or a `;` chaining a second command).
+        assert!(window_style_value("#ffffff;kill-server", "#000000").is_err());
+        assert!(window_style_value("#ffffff", "#000000,reverse").is_err());
+        assert!(window_style_value("red", "#000000").is_err());
+    }
 
     #[test]
     fn shq_escapes_quotes_and_spaces() {

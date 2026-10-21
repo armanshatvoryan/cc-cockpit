@@ -427,6 +427,14 @@ fn pane_command(pane_id: String) -> Result<String, String> {
     filetree::pane_command(&pane_id)
 }
 
+/// Theme → tmux: record the terminal's fg/bg so tmux answers OSC 10/11 colour
+/// queries with them instead of black (see `tmux::TERM_COLORS`). Colours are
+/// validated to `#rrggbb` before they reach tmux.
+#[tauri::command]
+fn set_term_colors(fg: String, bg: String) -> Result<(), String> {
+    tmux::set_term_colors(&fg, &bg)
+}
+
 /// File-tree (v1.1 cd-nav): the user's `$HOME`. The "Home" breadcrumb cd's here
 /// and breadcrumb labels are rooted below it. Pure env read.
 #[tauri::command]
@@ -903,6 +911,7 @@ pub fn run() {
             pane_cwd,
             pane_command,
             home_dir,
+            set_term_colors,
             discover_repos,
             reveal_in_finder,
             open_url,
