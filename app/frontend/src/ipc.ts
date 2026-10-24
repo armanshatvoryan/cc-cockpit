@@ -643,6 +643,12 @@ export function homeDir(): Promise<string> {
   return invoke<string>("home_dir");
 }
 
+/** Tell tmux the terminal's fg/bg (`#rrggbb`) so it answers programs' OSC
+ *  10/11 colour queries with the real theme instead of black. */
+export function setTermColors(fg: string, bg: string): Promise<void> {
+  return invoke<void>("set_term_colors", { fg, bg });
+}
+
 /** Persisted user preferences (`<app_config_dir>/cockpit/settings.json`). */
 export interface CockpitSettings {
   schemaVersion: number;
