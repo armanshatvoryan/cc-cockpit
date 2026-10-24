@@ -541,6 +541,16 @@ button {
 .pane.dead {
   opacity: 0.8;
 }
+/* A tab chip is being dragged over this pane: dropping joins the tab here. */
+.pane.drop-target {
+  border-color: var(--focus);
+  border-style: dashed;
+  box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--focus) 12%, transparent);
+}
+body.tab-dragging,
+body.tab-dragging * {
+  cursor: grabbing !important;
+}
 
 .pane-toolbar {
   display: flex;
@@ -556,15 +566,10 @@ button {
 
 .pane-title {
   color: var(--fg);
-  max-width: 220px;
+  max-width: 420px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.pane-id {
-  color: var(--fg-faint);
-  font-family: var(--mono);
-  font-size: 10px;
 }
 .toolbar-spacer {
   flex: 1 1 auto;
@@ -616,16 +621,6 @@ button {
   background: var(--danger);
   border-color: var(--danger);
   color: var(--on-accent);
-}
-/* A1 — narrow caret next to "Launch CC" that opens the model/flags dialog
-   (⌥-click on the main button does the same). */
-.tb-caret {
-  width: 15px;
-  padding: 0;
-  margin-left: -4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .pane-body {

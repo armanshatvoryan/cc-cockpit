@@ -44,6 +44,7 @@ import {
   trashPath,
   watchDirs,
   breakPane,
+  joinWindow,
   storePane,
   unstoreWindow,
   createStoredSession,
@@ -168,9 +169,15 @@ export function activePanes(): PaneInfo[] {
   return id ? panesForTab(id) : [];
 }
 
-/** Display name for a tab (local override wins over backend window name). */
+/** Display name for a tab: local override → a name set on purpose (restored
+ *  session, spin-up) → `tab-<position>`, matching the ⌘1-9 key. A tmux
+ *  auto-name is only the foreground process ("ssh", "2.1.310"), so it never shows. */
 export function tabDisplayName(tab: TabInfo): string {
-  return tabNameOverrides[tab.tmuxWindowId] ?? (tab.name || tab.tabId);
+  const override = tabNameOverrides[tab.tmuxWindowId];
+  if (override) return override;
+  if (!tab.autoNamed && tab.name) return tab.name;
+  const pos = store.tabs.findIndex((t) => t.tmuxWindowId === tab.tmuxWindowId);
+  return `tab-${pos + 1}`;
 }
 
 /** First-pane cwd for a tab, "" when no pane / cwd yet. */
@@ -1603,42 +1610,6 @@ export function cancelToggle(): void {
 
 const NAME_OK = /^[A-Za-z0-9._-]+$/;
 
-/** True when the pane's foreground command is claude — i.e. typing into it
- *  would land in a live agent's prompt, not a shell. Fails CLOSED (treats an
- *  unreadable pane as "running claude") so a lost query can never cause a
- *  stray launch line to be typed into an agent. */
-async function paneRunsClaude(paneId: string): Promise<boolean> {
-  try {
-    return (await paneCommand(paneId)).toLowerCase().includes("claude");
-  } catch {
-    return true;
-  }
-}
-
-/** A1 — the pane toolbar's zero-friction "Launch CC" path: launch straight
- *  into an existing pane (no dialog). Surfaces a failure the same way every
- *  other launch path here does — `setStore("error", ...)` — so a bad cwd or
- *  backend error is visible, not indistinguishable from success. */
-export async function directLaunchCc(paneId: string, cwd: string): Promise<void> {
-  // An IDLE pane can be an idle CLAUDE SESSION, not a fresh shell — launching
-  // there would type `cd … && claude` + CR straight into the agent's prompt.
-  if (await paneRunsClaude(paneId)) {
-    setStore(
-      "error",
-      `pane ${paneId} is already running claude — use ⌥-click / ⌄ for launch options`,
-    );
-    return;
-  }
-  // An empty cwd would emit `cd '' && … claude`: zsh errors on the cd and the
-  // `&&` swallows the launch, while run_line_in_pane still reports Ok.
-  const dir = cwd.trim() || "~";
-  try {
-    await launchCc(paneId, dir);
-  } catch (e) {
-    setStore("error", `launch failed: ${String(e)}`);
-  }
-}
-
 export async function launchFromInventory(item: InventoryItem): Promise<void> {
   if (item.type !== "skill" && item.type !== "subagent") return;
   if (!NAME_OK.test(item.name)) {
@@ -2104,17 +2075,26 @@ export function ftLiveAgents(): { paneId: string; label: string }[] {
   }));
 }
 
-/** Best display name for a pane's toolbar: a live team-board member's `name`
- *  (Claude Code's own OSC title overwrite otherwise yields "general-purpose"
- *  for every teammate pane), else the pane's own title, else its raw id. The
- *  tooltip surfaces the member's task summary (if any) plus the pane's cwd. */
+/** Name for a pane's toolbar — WHERE it works, never an id:
+ *   - a live team-board member: its `name` (Claude Code's own OSC title
+ *     overwrite otherwise yields "general-purpose" for every teammate) · branch
+ *   - an ssh pane: `host · <Claude title>` (the remote's repo isn't visible
+ *     from here, and the local cwd/branch would be the Mac's, not the remote's)
+ *   - otherwise: `project · branch` (branch omitted outside a repo).
+ *  Claude's session title, the cwd and the raw `%N` go to the tooltip. */
 export function paneLabel(pane: PaneInfo): { text: string; tooltip: string } {
   const member = liveMembersByPane().get(pane.paneId);
-  const text = member?.name || pane.title || pane.paneId;
-  const tooltipParts = [member?.taskSummary, pane.cwd].filter(
+  const title = stripTitleGlyph(pane.title ?? "");
+  const parts = member?.name
+    ? [member.name, pane.branch]
+    : pane.sshHost
+      ? [pane.sshHost, title]
+      : [pane.project, pane.branch];
+  const text = parts.filter(Boolean).join(" · ");
+  const tooltipParts = [member?.taskSummary, title, pane.cwd, pane.paneId].filter(
     (p): p is string => !!p,
   );
-  return { text, tooltip: tooltipParts.join(" — ") || pane.paneId };
+  return { text, tooltip: tooltipParts.join(" — ") };
 }
 /** Attach a file to a chosen agent: insert its path into that agent's pane.
  *  (insertPathInto detects the claude pane → `@path` mention.)
@@ -2182,6 +2162,30 @@ function ftOnChanged(dir: string): void {
   ftReloadTimers[dir] = window.setTimeout(() => void ftLoadDir(dir), 150);
 }
 export { ftOnChanged };
+
+// ── Tab → pane (drag a tab chip onto a pane) ─────────────────────────────────
+/** The tab chip being dragged and the pane under the pointer, while a drag is
+ *  live — drives the drop highlight. null when no drag. */
+const [tabDrag, setTabDrag] = createSignal<{
+  windowId: string;
+  overPaneId: string | null;
+} | null>(null);
+export { tabDrag, setTabDrag };
+
+/** Move every pane of the tab `srcWindowId` beside `targetPaneId` (the
+ *  reverse of "send pane to new tab"); the emptied tab closes. Focus follows
+ *  the moved pane. A drop on a pane of the dragged tab itself is a no-op. */
+export async function joinTabIntoPane(srcWindowId: string, targetPaneId: string): Promise<void> {
+  const src = store.tabs.find((t) => t.tmuxWindowId === srcWindowId);
+  if (!src || src.paneIds.includes(targetPaneId)) return;
+  try {
+    await joinWindow(srcWindowId, targetPaneId);
+    await refreshState();
+    setFocusedPaneId(src.paneIds[0] ?? targetPaneId);
+  } catch (e) {
+    setStore("error", `move tab into pane failed: ${String(e)}`);
+  }
+}
 
 // ── Send pane → new tab (Phase E) ─────────────────────────────────────────────
 /** Break a pane out into its own new tab (kept running) + switch to it. The

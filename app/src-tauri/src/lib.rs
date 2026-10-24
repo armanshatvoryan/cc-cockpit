@@ -18,6 +18,7 @@ pub mod gitstatus;
 pub mod inventory;
 pub mod layout;
 pub mod manager;
+pub mod panemeta;
 pub mod persist;
 pub mod settings;
 pub mod status;
@@ -526,6 +527,18 @@ fn break_pane(
     with_reconnect(&app, &state, |mgr| mgr.break_pane(&pane_id))
 }
 
+/// "Tab → pane": move every pane of tab window `src_window_id` into the tab
+/// holding `target_pane_id`, beside that pane. The emptied tab closes.
+#[tauri::command]
+fn join_window(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    src_window_id: String,
+    target_pane_id: String,
+) -> Result<(), String> {
+    with_reconnect(&app, &state, |mgr| mgr.join_window(&src_window_id, &target_pane_id))
+}
+
 // ── Wave D: stored sessions ──────────────────────────────────────────────────
 //
 // A stored session is a detached tmux window named `_sb:<label>`. tmux remains
@@ -910,6 +923,7 @@ pub fn run() {
             trash_path,
             watch_dirs,
             break_pane,
+            join_window,
             usage_snapshot,
             store_pane,
             unstore_window,

@@ -34,6 +34,12 @@ export interface PaneInfo {
    *  published it. Absent for a shell pane, or for a claude that started before
    *  the hook was installed. */
   sessionId?: string;
+  /** Repo root folder of `cwd` (or the cwd folder outside a repo). */
+  project: string;
+  /** Checked-out branch of that repo; absent outside one. */
+  branch?: string | null;
+  /** ssh destination when the pane is in an ssh session (`win`). */
+  sshHost?: string | null;
 }
 
 /** One pane's rectangle in tmux cell space (parsed from `window_layout`). */
@@ -57,6 +63,9 @@ export interface TabInfo {
   tmuxWindowId: string;
   index: number;
   name: string;
+  /** tmux auto-renamed the window after its foreground process (`ssh`, `node`,
+   *  claude's version string) — `name` is noise, not a chosen name. */
+  autoNamed: boolean;
   layout: string;
   /** null when the layout string failed to parse — fall back to the CSS grid. */
   geometry: WindowLayout | null;
@@ -727,6 +736,11 @@ export function watchDirs(dirs: string[]): Promise<void> {
  *  running). Resolves to the new `windowId` so the caller can switch to it. */
 export function breakPane(paneId: string): Promise<string> {
   return invoke<string>("break_pane", { paneId });
+}
+
+/** Move every pane of tab window `srcWindowId` beside `targetPaneId`. */
+export function joinWindow(srcWindowId: string, targetPaneId: string): Promise<void> {
+  return invoke<void>("join_window", { srcWindowId, targetPaneId });
 }
 
 // ── Stored sessions (Wave D — the sessions sidebar) ─────────────────────────

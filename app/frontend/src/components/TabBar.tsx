@@ -6,6 +6,7 @@
 // Interactions:
 //   click           -> switch active tab
 //   double-click    -> inline rename (LOCAL ONLY for v1 — no backend rename)
+//   drag onto a pane -> join this tab's panes beside it (reverse of ⤴)
 //   close (×)       -> close_tab; if live panes, a confirm modal then force
 //   "+"             -> create_tab
 
@@ -25,6 +26,8 @@ import {
   tabNeedsInputCount,
   gitStatus,
   openWindowsTab,
+  setTabDrag,
+  joinTabIntoPane,
 } from "../store";
 
 // Windows-laptop launcher: logo button -> menu (Claude Code / plain PowerShell),
@@ -98,6 +101,48 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
     setEditing(false);
   }
 
+  // Drag-to-join. Pointer events, not HTML5 DnD (flaky in WKWebView): past a
+  // small threshold the chip is "dragging", the pane under the pointer is
+  // tracked for the drop highlight, and release over a pane joins the tab
+  // there. The click that can trail a drag must not switch tabs.
+  let suppressClick = false;
+  function onPointerDown(e: PointerEvent) {
+    if (e.button !== 0 || editing()) return;
+    if ((e.target as HTMLElement).closest(".tab-close")) return;
+    const sx = e.clientX;
+    const sy = e.clientY;
+    let dragging = false;
+    const paneAt = (x: number, y: number) =>
+      (document.elementFromPoint(x, y)?.closest("[data-pane-id]") as HTMLElement | null)
+        ?.dataset.paneId ?? null;
+    const move = (ev: PointerEvent) => {
+      if (!dragging && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return;
+      if (!dragging) {
+        dragging = true;
+        document.body.classList.add("tab-dragging");
+      }
+      setTabDrag({
+        windowId: props.tab.tmuxWindowId,
+        overPaneId: paneAt(ev.clientX, ev.clientY),
+      });
+    };
+    const end = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      if (!dragging) return;
+      document.body.classList.remove("tab-dragging");
+      setTabDrag(null);
+      suppressClick = true;
+      setTimeout(() => (suppressClick = false), 0);
+      const target = ev.type === "pointerup" ? paneAt(ev.clientX, ev.clientY) : null;
+      if (target) void joinTabIntoPane(props.tab.tmuxWindowId, target);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  }
+
   async function onCloseClick(e: MouseEvent) {
     e.stopPropagation();
     const res = await requestCloseTab(props.tab.tabId, false);
@@ -113,7 +158,10 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
       <div
         class="tab-chip"
         classList={{ active: active() }}
-        onClick={() => switchTab(props.tab.tabId)}
+        onClick={() => {
+          if (!suppressClick) switchTab(props.tab.tabId);
+        }}
+        onPointerDown={onPointerDown}
         onDblClick={startRename}
         title={props.tab.tabId}
       >

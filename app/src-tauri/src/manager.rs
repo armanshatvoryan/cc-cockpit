@@ -156,6 +156,14 @@ pub struct PaneInfo {
     /// hook has published one. `None` for a shell pane, a pane whose claude
     /// predates the hook being installed, or a pane running something else.
     pub session_id: Option<String>,
+    /// Repo root folder name of `cwd`, or the cwd's own folder outside a repo.
+    pub project: String,
+    /// Checked-out branch of that repo (short sha when detached); None outside one.
+    pub branch: Option<String>,
+    /// Destination of the pane's `ssh` process (`win` for `ssh win`); None when
+    /// the pane isn't in an ssh session. `cwd`/`project`/`branch` are then the
+    /// LOCAL side's and say nothing about the remote.
+    pub ssh_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -169,6 +177,10 @@ pub struct TabInfo {
     pub index: u32,
     /// Window name.
     pub name: String,
+    /// tmux `automatic-rename` is still on: `name` is just the foreground
+    /// process (`ssh`, `node`, claude's version string), not a name anyone chose.
+    /// A rename / `new-window -n` turns it off.
+    pub auto_named: bool,
     /// tmux layout string for the window (for the frontend's pane geometry).
     pub layout: String,
     /// Parsed pane geometry (tmux is the layout authority — bug #10). None
@@ -242,6 +254,18 @@ pub struct PaneStatusPayload {
 }
 
 // ── tab id <-> window mapping ────────────────────────────────────────────────
+
+/// tmux's default pane title is the hostname — what every plain shell shows
+/// until something sets an OSC title. That says nothing about the pane, so
+/// blank it and let the frontend fall back to a position id.
+fn meaningful_title(title: String, host: &str) -> String {
+    let short = host.split('.').next().unwrap_or(host);
+    if title == host || (!short.is_empty() && title == short) {
+        String::new()
+    } else {
+        title
+    }
+}
 
 /// Cockpit tab id from a tmux window index. `tab-<index>`.
 pub fn tab_id_for_index(index: u32) -> String {
@@ -727,6 +751,31 @@ impl SessionManager {
         Ok(out.trimmed())
     }
 
+    /// "Tab → pane": move every pane of window `src_window` next to
+    /// `target_pane` (tmux `join-pane`, side by side). The reverse of
+    /// `break_pane`; tmux closes the emptied source window itself. `-d` keeps
+    /// tmux's focus put — the cockpit's active tab is frontend-driven.
+    pub fn join_window(&mut self, src_window: &str, target_pane: &str) -> Result<(), String> {
+        if !is_window_id(src_window) {
+            return Err(format!("bad window id {src_window:?}, want @<n>"));
+        }
+        if !is_pane_id(target_pane) {
+            return Err(format!("bad pane id {target_pane:?}, want %<n>"));
+        }
+        let target_window = tmux::tmux_ok(&[
+            "display-message", "-p", "-t", target_pane, "-F", "#{window_id}",
+        ])?
+        .trimmed();
+        if target_window == src_window {
+            return Err("can't move a tab into itself".into());
+        }
+        let panes = tmux::tmux_ok(&["list-panes", "-t", src_window, "-F", "#{pane_id}"])?;
+        for pane in panes.stdout.lines().filter(|p| is_pane_id(p)) {
+            tmux::tmux_ok(&["join-pane", "-d", "-h", "-s", pane, "-t", target_pane])?;
+        }
+        Ok(())
+    }
+
     // ── F3/F4: launch ────────────────────────────────────────────────────────
 
     /// Launch Claude Code in a pane: `cd <cwd> && COCKPIT_PANE_ID=<pane> claude
@@ -1018,13 +1067,13 @@ impl SessionManager {
     }
 
     fn collect_tabs(&self) -> Result<Vec<TabInfo>, String> {
-        // One line per window: id, index, name, layout.
+        // One line per window: id, index, automatic-rename flag, name, layout.
         let out = tmux::tmux(&[
             "list-windows",
             "-t",
             SESSION,
             "-F",
-            "#{window_id}\t#{window_index}\t#{window_name}\t#{window_layout}",
+            "#{window_id}\t#{window_index}\t#{automatic-rename}\t#{window_name}\t#{window_layout}",
         ])?;
         if !out.ok() {
             return Ok(vec![]);
@@ -1036,6 +1085,7 @@ impl SessionManager {
             let mut it = line.split('\t');
             let win = it.next().unwrap_or("").to_string();
             let index: u32 = it.next().unwrap_or("0").parse().unwrap_or(0);
+            let auto_named = it.next() == Some("1");
             let name = it.next().unwrap_or("").to_string();
             let layout = it.next().unwrap_or("").to_string();
             let pane_ids = pane_map.get(&win).cloned().unwrap_or_default();
@@ -1045,6 +1095,7 @@ impl SessionManager {
                 tmux_window_id: win,
                 index,
                 name,
+                auto_named,
                 layout,
                 geometry,
                 pane_ids,
@@ -1090,7 +1141,7 @@ impl SessionManager {
             "-t",
             SESSION,
             "-F",
-            "#{pane_id}\t#{window_index}\t#{pane_current_path}\t#{pane_title}\t#{pane_dead}\t#{pid}",
+            "#{pane_id}\t#{window_index}\t#{pane_current_path}\t#{pane_title}\t#{pane_dead}\t#{pid}\t#{host}\t#{pane_pid}\t#{pane_current_command}",
         ])?;
         if !out.ok() {
             return Ok(vec![]);
@@ -1101,6 +1152,7 @@ impl SessionManager {
         let mut session_map = std::collections::HashMap::new();
 
         let mut panes = vec![];
+        let mut ssh_panes: Vec<(String, String)> = vec![];
         for line in out.stdout.lines() {
             let mut it = line.split('\t');
             let pane = it.next().unwrap_or("").to_string();
@@ -1109,9 +1161,20 @@ impl SessionManager {
             let title = it.next().unwrap_or("").to_string();
             let dead = it.next().unwrap_or("0") == "1";
             let pid = it.next().unwrap_or("");
+            let title = meaningful_title(title, it.next().unwrap_or(""));
+            let pane_pid = it.next().unwrap_or("");
+            let command = it.next().unwrap_or("");
             if !is_pane_id(&pane) {
                 continue; // mangled/fused line (e.g. C-locale tab sanitization)
             }
+            if command == "ssh" {
+                ssh_panes.push((pane.clone(), pane_pid.to_string()));
+            }
+            let head = crate::panemeta::repo_head(std::path::Path::new(&cwd));
+            let project = match &head {
+                Some(h) => h.project.clone(),
+                None => cwd.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string(),
+            };
             if !pid.is_empty() && pid != server_pid {
                 server_pid = pid.to_string();
                 session_map =
@@ -1132,7 +1195,14 @@ impl SessionManager {
                 status: status.as_str().into(),
                 ambiguous: status == Status::Unknown,
                 session_id,
+                project,
+                branch: head.map(|h| h.branch),
+                ssh_host: None,
             });
+        }
+        let hosts = crate::panemeta::ssh_hosts(&ssh_panes);
+        for p in panes.iter_mut() {
+            p.ssh_host = hosts.get(&p.pane_id).cloned();
         }
         Ok(panes)
     }
@@ -1583,6 +1653,15 @@ mod tests {
         assert_eq!(parse_u32_fields("1 2 3", 2), Some(vec![1, 2]));
     }
 
+    #[test]
+    fn hostname_title_is_blanked_real_titles_kept() {
+        let host = "MacBook-Air-Arman.local";
+        assert_eq!(meaningful_title(host.into(), host), "");
+        assert_eq!(meaningful_title("MacBook-Air-Arman".into(), host), "");
+        assert_eq!(meaningful_title("✳ Slice b1 evaluation".into(), host), "✳ Slice b1 evaluation");
+        assert_eq!(meaningful_title("".into(), ""), "");
+    }
+
     // ── Wave D: stored sessions (`_sb:` windows) ─────────────────────────────
 
     fn tab(win: &str, index: u32, name: &str, panes: &[&str]) -> TabInfo {
@@ -1591,6 +1670,7 @@ mod tests {
             tmux_window_id: win.into(),
             index,
             name: name.into(),
+            auto_named: false,
             layout: "abcd,80x24,0,0,1".into(),
             geometry: None,
             pane_ids: panes.iter().map(|p| p.to_string()).collect(),
