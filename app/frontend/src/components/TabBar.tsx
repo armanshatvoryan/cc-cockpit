@@ -7,6 +7,7 @@
 //   click           -> switch active tab
 //   double-click    -> inline rename (LOCAL ONLY for v1 — no backend rename)
 //   drag onto a pane -> join this tab's panes beside it (reverse of ⤴)
+//   drag onto a tab  -> reorder: land before/after it (pointer's half of the chip)
 //   close (×)       -> close_tab; if live panes, a confirm modal then force
 //   "+"             -> create_tab
 
@@ -26,8 +27,11 @@ import {
   tabNeedsInputCount,
   gitStatus,
   openWindowsTab,
+  tabDrag,
   setTabDrag,
   joinTabIntoPane,
+  reorderTab,
+  isNoopTabMove,
 } from "../store";
 
 // Windows-laptop launcher: logo button -> menu (Claude Code / plain PowerShell),
@@ -91,6 +95,13 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
     return `${tabCwd(props.tab)}${gitPart}`;
   };
 
+  // Reorder drop marker: which edge of this chip the dragged tab would land on.
+  const dropSide = () => {
+    const over = tabDrag()?.overTab;
+    if (over?.windowId !== props.tab.tmuxWindowId) return null;
+    return over.after ? "after" : "before";
+  };
+
   function startRename() {
     setDraft(tabDisplayName(props.tab));
     setEditing(true);
@@ -101,10 +112,11 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
     setEditing(false);
   }
 
-  // Drag-to-join. Pointer events, not HTML5 DnD (flaky in WKWebView): past a
-  // small threshold the chip is "dragging", the pane under the pointer is
-  // tracked for the drop highlight, and release over a pane joins the tab
-  // there. The click that can trail a drag must not switch tabs.
+  // Drag-to-join / drag-to-reorder. Pointer events, not HTML5 DnD (flaky in
+  // WKWebView): past a small threshold the chip is "dragging", the pane or
+  // chip under the pointer is tracked for the drop highlight, and release
+  // over a pane joins the tab there, over a chip moves it before/after that
+  // chip. The click that can trail a drag must not switch tabs.
   let suppressClick = false;
   function onPointerDown(e: PointerEvent) {
     if (e.button !== 0 || editing()) return;
@@ -115,6 +127,18 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
     const paneAt = (x: number, y: number) =>
       (document.elementFromPoint(x, y)?.closest("[data-pane-id]") as HTMLElement | null)
         ?.dataset.paneId ?? null;
+    const tabAt = (x: number, y: number) => {
+      const chip = document
+        .elementFromPoint(x, y)
+        ?.closest("[data-window-id]") as HTMLElement | null;
+      const windowId = chip?.dataset.windowId;
+      if (!chip || !windowId) return null;
+      const r = chip.getBoundingClientRect();
+      const after = x > r.left + r.width / 2;
+      return isNoopTabMove(props.tab.tmuxWindowId, windowId, after)
+        ? null
+        : { windowId, after };
+    };
     const move = (ev: PointerEvent) => {
       if (!dragging && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return;
       if (!dragging) {
@@ -124,6 +148,7 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
       setTabDrag({
         windowId: props.tab.tmuxWindowId,
         overPaneId: paneAt(ev.clientX, ev.clientY),
+        overTab: tabAt(ev.clientX, ev.clientY),
       });
     };
     const end = (ev: PointerEvent) => {
@@ -135,8 +160,11 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
       setTabDrag(null);
       suppressClick = true;
       setTimeout(() => (suppressClick = false), 0);
-      const target = ev.type === "pointerup" ? paneAt(ev.clientX, ev.clientY) : null;
-      if (target) void joinTabIntoPane(props.tab.tmuxWindowId, target);
+      if (ev.type !== "pointerup") return;
+      const pane = paneAt(ev.clientX, ev.clientY);
+      const tab = tabAt(ev.clientX, ev.clientY);
+      if (pane) void joinTabIntoPane(props.tab.tmuxWindowId, pane);
+      else if (tab) void reorderTab(props.tab.tmuxWindowId, tab.windowId, tab.after);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end);
@@ -157,7 +185,13 @@ const TabChip: Component<{ tab: TabInfo }> = (props) => {
     <>
       <div
         class="tab-chip"
-        classList={{ active: active() }}
+        classList={{
+          active: active(),
+          dragging: tabDrag()?.windowId === props.tab.tmuxWindowId,
+          "drop-before": dropSide() === "before",
+          "drop-after": dropSide() === "after",
+        }}
+        data-window-id={props.tab.tmuxWindowId}
         onClick={() => {
           if (!suppressClick) switchTab(props.tab.tabId);
         }}

@@ -743,6 +743,11 @@ export function joinWindow(srcWindowId: string, targetPaneId: string): Promise<v
   return invoke<void>("join_window", { srcWindowId, targetPaneId });
 }
 
+/** Move tab window `srcWindowId` to just before (or `after`) `targetWindowId`. */
+export function moveTab(srcWindowId: string, targetWindowId: string, after: boolean): Promise<void> {
+  return invoke<void>("move_tab", { srcWindowId, targetWindowId, after });
+}
+
 // ── Stored sessions (Wave D — the sessions sidebar) ─────────────────────────
 // A stored session is an ordinary tmux window renamed `_sb:<label>`; the backend
 // partitions those out of `tabs` into `stored`. There is deliberately no "kill

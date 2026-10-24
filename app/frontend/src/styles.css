@@ -303,6 +303,16 @@ button {
   border-color: var(--border-strong);
   color: var(--fg);
 }
+/* Drag-to-reorder: the dragged chip dims; a bar marks where it would land. */
+.tab-chip.dragging {
+  opacity: 0.5;
+}
+.tab-chip.drop-before {
+  box-shadow: -3px 0 0 -1px var(--focus);
+}
+.tab-chip.drop-after {
+  box-shadow: 3px 0 0 -1px var(--focus);
+}
 
 .tab-dot {
   width: 7px;

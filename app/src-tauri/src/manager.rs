@@ -280,6 +280,21 @@ pub fn is_window_id(s: &str) -> bool {
     s.len() >= 2 && s.starts_with('@') && s[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
+/// argv for the tab-reorder `move-window`. Both ids are validated (window ids
+/// only — never an index, which tmux reuses) and a self-move is refused.
+pub fn move_window_args(src: &str, target: &str, after: bool) -> Result<Vec<String>, String> {
+    for w in [src, target] {
+        if !is_window_id(w) {
+            return Err(format!("bad window id {w:?}, want @<n>"));
+        }
+    }
+    if src == target {
+        return Err("can't move a tab next to itself".into());
+    }
+    let side = if after { "-a" } else { "-b" };
+    Ok(["move-window", side, "-s", src, "-t", target].map(String::from).to_vec())
+}
+
 /// A tmux pane id is `%` followed by ASCII digits (e.g. `%3`). List-parsers
 /// validate every id before serving it to the frontend: a C-locale tmux
 /// sanitizes the TAB field delimiters to `_`, fusing a whole list-panes line
@@ -773,6 +788,22 @@ impl SessionManager {
         for pane in panes.stdout.lines().filter(|p| is_pane_id(p)) {
             tmux::tmux_ok(&["join-pane", "-d", "-h", "-s", pane, "-t", target_pane])?;
         }
+        Ok(())
+    }
+
+    /// Tab reorder: move window `src_window` to just before (or, with `after`,
+    /// just after) `target_window` (tmux `move-window -b|-a`, which shifts the
+    /// windows in the way). Tab ids follow the window index, so every moved
+    /// tab's `tab-<n>` changes — the caller re-resolves by window id.
+    pub fn move_window(
+        &mut self,
+        src_window: &str,
+        target_window: &str,
+        after: bool,
+    ) -> Result<(), String> {
+        let args = move_window_args(src_window, target_window, after)?;
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        tmux::tmux_ok(&argv)?;
         Ok(())
     }
 
@@ -1447,6 +1478,18 @@ mod tests {
     fn tab_id_roundtrip() {
         assert_eq!(tab_id_for_index(0), "tab-0");
         assert_eq!(tab_id_for_index(7), "tab-7");
+    }
+
+    #[test]
+    fn move_window_args_validate_and_pick_side() {
+        assert_eq!(
+            move_window_args("@3", "@0", false).unwrap(),
+            ["move-window", "-b", "-s", "@3", "-t", "@0"]
+        );
+        assert_eq!(move_window_args("@0", "@2", true).unwrap()[1], "-a");
+        assert!(move_window_args("@1", "@1", false).is_err());
+        assert!(move_window_args("1", "@2", false).is_err());
+        assert!(move_window_args("@1", "-t;kill-server", true).is_err());
     }
 
     #[test]

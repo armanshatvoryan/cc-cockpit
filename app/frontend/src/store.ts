@@ -45,6 +45,7 @@ import {
   watchDirs,
   breakPane,
   joinWindow,
+  moveTab,
   storePane,
   unstoreWindow,
   createStoredSession,
@@ -2164,13 +2165,46 @@ function ftOnChanged(dir: string): void {
 export { ftOnChanged };
 
 // ── Tab → pane (drag a tab chip onto a pane) ─────────────────────────────────
-/** The tab chip being dragged and the pane under the pointer, while a drag is
- *  live — drives the drop highlight. null when no drag. */
+/** The tab chip being dragged and what's under the pointer, while a drag is
+ *  live — a pane (drop joins) or another chip plus the side the tab would land
+ *  on (drop reorders). Drives the drop highlights. null when no drag. */
 const [tabDrag, setTabDrag] = createSignal<{
   windowId: string;
   overPaneId: string | null;
+  overTab: { windowId: string; after: boolean } | null;
 } | null>(null);
 export { tabDrag, setTabDrag };
+
+/** Would dropping `srcWindowId` before/after `targetWindowId` leave the tab
+ *  order as it is (its own chip, or the near edge of a neighbour)? */
+export function isNoopTabMove(srcWindowId: string, targetWindowId: string, after: boolean): boolean {
+  const ids = store.tabs.map((t) => t.tmuxWindowId);
+  const src = ids.indexOf(srcWindowId);
+  const target = ids.indexOf(targetWindowId);
+  if (src < 0 || target < 0 || src === target) return true;
+  return after ? target === src - 1 : target === src + 1;
+}
+
+/** Drag a chip onto another chip: move the tab before/after it. Tab ids are
+ *  `tab-<window index>`, so the move renames them — the active tab is
+ *  re-resolved by its stable window id afterwards. */
+export async function reorderTab(
+  srcWindowId: string,
+  targetWindowId: string,
+  after: boolean,
+): Promise<void> {
+  if (isNoopTabMove(srcWindowId, targetWindowId, after)) return;
+  const activeWindowId = activeTab()?.tmuxWindowId;
+  try {
+    await moveTab(srcWindowId, targetWindowId, after);
+    await refreshState();
+    const tab = store.tabs.find((t) => t.tmuxWindowId === activeWindowId);
+    if (tab) setActiveTabId(tab.tabId);
+    persistLayout();
+  } catch (e) {
+    setStore("error", `move tab failed: ${String(e)}`);
+  }
+}
 
 /** Move every pane of the tab `srcWindowId` beside `targetPaneId` (the
  *  reverse of "send pane to new tab"); the emptied tab closes. Focus follows
