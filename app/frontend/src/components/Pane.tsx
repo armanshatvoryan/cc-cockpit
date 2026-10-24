@@ -13,11 +13,10 @@ import {
   sendPaneToNewTab,
   sendPaneToSidebar,
   paneLabel,
-  directLaunchCc,
   copySessionId,
+  tabDrag,
 } from "../store";
 import { StatusBadge } from "./StatusBadge";
-import { LaunchDialog } from "./LaunchDialog";
 import { XtermHost } from "../XtermHost";
 
 export const Pane: Component<{
@@ -26,7 +25,6 @@ export const Pane: Component<{
   /** This pane's tmux rect (layout mirror) — XtermHost resizes to match. */
   rect?: LayoutRect;
 }> = (props) => {
-  const [showLaunch, setShowLaunch] = createSignal(false);
   // Transient "copied" acknowledgement on the session chip. The timer is owned
   // here and cleared on unmount so a pane killed mid-flash cannot fire into a
   // disposed component.
@@ -41,18 +39,19 @@ export const Pane: Component<{
     copiedTimer = setTimeout(() => setCopied(false), 1200);
   }
 
-  // "fresh" panes (a bare shell, not yet running CC) are the launch targets.
-  const canLaunch = () =>
-    !props.pane.dead &&
-    (props.pane.status === "IDLE" || props.pane.status === "UNKNOWN");
-  // A2 — team-board member name (falls back to pane title / id) + tooltip.
+  // Where the pane works (project · branch / host · title) + tooltip.
   // Memoized: read twice per render (text + tooltip) and it joins run rows.
   const label = createMemo(() => paneLabel(props.pane));
 
   return (
     <div
       class="pane"
-      classList={{ focused: props.focused, dead: props.pane.dead }}
+      classList={{
+        focused: props.focused,
+        dead: props.pane.dead,
+        "drop-target": tabDrag()?.overPaneId === props.pane.paneId,
+      }}
+      data-pane-id={props.pane.paneId}
       onMouseDown={() => focusPane(props.pane.paneId)}
     >
       <div class="pane-toolbar">
@@ -60,35 +59,7 @@ export const Pane: Component<{
         <span class="pane-title" title={label().tooltip}>
           {label().text}
         </span>
-        <span class="pane-id">{props.pane.paneId}</span>
         <span class="toolbar-spacer" />
-
-        <Show when={canLaunch()}>
-          <button
-            class="tb-btn"
-            title="Launch Claude here (⌥-click for options; refuses a pane already running claude)"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (e.altKey) {
-                setShowLaunch(true);
-                return;
-              }
-              void directLaunchCc(props.pane.paneId, props.pane.cwd);
-            }}
-          >
-            Launch CC
-          </button>
-          <button
-            class="tb-btn tb-caret"
-            title="Launch options (model / flags / shell)"
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowLaunch(true);
-            }}
-          >
-            ⌄
-          </button>
-        </Show>
 
         {/* Claude session id. Rendered only once the cockpit-session-map hook
             has published one for this pane, so a shell pane shows nothing
@@ -154,22 +125,12 @@ export const Pane: Component<{
         <Show
           when={!props.pane.dead}
           fallback={
-            <div class="pane-dead-overlay">
-              pane {props.pane.paneId} exited
-            </div>
+            <div class="pane-dead-overlay">pane exited</div>
           }
         >
           <XtermHost paneId={props.pane.paneId} rect={props.rect} />
         </Show>
       </div>
-
-      <Show when={showLaunch()}>
-        <LaunchDialog
-          paneId={props.pane.paneId}
-          defaultCwd={props.pane.cwd}
-          onClose={() => setShowLaunch(false)}
-        />
-      </Show>
     </div>
   );
 };

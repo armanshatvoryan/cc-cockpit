@@ -21,6 +21,7 @@
 
 import { createEffect, onCleanup, onMount, type Component } from "solid-js";
 import { Terminal } from "@xterm/xterm";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import {
   onPaneData,
@@ -98,6 +99,13 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     });
 
     term.open(hostEl);
+    // Unicode 11 widths: xterm's default (Unicode 6) makes every emoji 1 column
+    // while tmux and Claude count 2, so after the status line's ⚡ each cell
+    // Claude draws lands one column off and menu repaints leave stale cells
+    // (coloured bar fragments, stray digits). Still off by one: VS16 sequences
+    // such as ⚠️, which tmux treats as wide.
+    term.loadAddon(new Unicode11Addon());
+    term.unicode.activeVersion = "11";
 
     // NOTE: WebglAddon intentionally NOT used — it renders an all-black canvas in
     // the macOS WKWebView. The default DOM renderer is plenty for v1 (output is
@@ -366,6 +374,79 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       maybeWarmStart();
     });
 
+    // ── Content floor (scroll-past-input bug) ─────────────────────────────
+    //
+    // Claude Code renders inline. A tall transient frame (slash picker,
+    // AskUserQuestion menu, /btw overlay) scrolls real transcript rows into
+    // scrollback; when it closes, Claude erases the freed rows IN PLACE
+    // (2K + cursor-up, then K on the rows below) and cannot un-scroll. The
+    // input box then sits mid-screen with blank SCREEN rows under it. Those
+    // rows are genuine grid state: tmux's grid has them too, and so does a
+    // bare pty with no tmux in between. They are not an xterm divergence. xterm's scroll
+    // range always ends at the last screen row, so the user can scroll "past
+    // the input line" into them.
+    //
+    // The grid must keep mirroring tmux, so the fix touches the VIEWPORT
+    // only. The lowest reachable scroll position is clamped so the last content row
+    // (or the cursor row) sits at the bottom of the view, keeping at most
+    // FLOOR_SLACK blank rows. While the user is "pinned" there, the view
+    // follows the floor as output arrives. Normal buffer only (alt-screen TUIs
+    // own their whole screen). An explicit ED2/ED3 (shell `clear`, Ctrl+L, our own
+    // resync clear) disables the floor until content scrolls again, so a
+    // cleared shell keeps looking cleared.
+    const FLOOR_SLACK = 2; // Claude normally leaves ~1 blank row under its status line
+    let clearedAtBase = -1;
+    let pinned = true;
+    let userScrollAt = 0;
+    const csiJ = term.parser.registerCsiHandler({ final: "J" }, (params) => {
+      const p = params[0];
+      if (p === 2 || p === 3) clearedAtBase = term.buffer.active.baseY;
+      return false; // observe only; xterm still performs the erase
+    });
+    const contentFloor = (): number => {
+      const b = term.buffer.active;
+      if (b.type !== "normal" || b.baseY <= clearedAtBase) return b.baseY;
+      let last = b.baseY + b.cursorY;
+      for (let i = b.length - 1; i > last; i--) {
+        if (b.getLine(i)?.translateToString(true).trim()) {
+          last = i;
+          break;
+        }
+      }
+      return Math.max(0, Math.min(b.baseY, last - (term.rows - 1) + FLOOR_SLACK));
+    };
+    let lastScrollPos = -1;
+    const markUserScroll = () => {
+      userScrollAt = performance.now();
+    };
+    // Plain typing must NOT count: it would let the reply's own scrolling unpin.
+    const markScrollKey = (e: KeyboardEvent) => {
+      if (e.shiftKey && /^(PageUp|PageDown|Home|End)$/.test(e.key)) markUserScroll();
+    };
+    // Capture phase: runs before xterm's own handlers consume the gesture.
+    hostEl.addEventListener("wheel", markUserScroll, { capture: true, passive: true });
+    hostEl.addEventListener("pointerdown", markUserScroll, true); // scrollbar drag
+    hostEl.addEventListener("keydown", markScrollKey, true);
+    const scrollSub = term.onScroll((pos) => {
+      const f = contentFloor();
+      if (pos > f) {
+        term.scrollToLine(f); // re-enters with pos === f
+        return;
+      }
+      const moved = pos !== lastScrollPos;
+      lastScrollPos = pos;
+      // Only a user gesture that actually moved the view changes the pin.
+      // Buffer scrolls during a write never do.
+      if (moved && performance.now() - userScrollAt < 300) pinned = pos >= f;
+    });
+    // A clamped viewport counts as "user scrolled" to xterm, which then stops
+    // auto-following output, so we do the following ourselves.
+    const parsedSub = term.onWriteParsed(() => {
+      if (!pinned) return;
+      const f = contentFloor();
+      if (term.buffer.active.viewportY !== f) term.scrollToLine(f);
+    });
+
     // Output: write decoded bytes verbatim (xterm is a full VT emulator).
     let unlistenData: UnlistenFn | undefined;
     onPaneData((p: PaneDataPayload) => {
@@ -391,6 +472,21 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
     // Input: onData yields already-encoded VT (arrows/ctrl/paste) — send literal.
     const dataSub = term.onData((data) => {
       paneSendKeys(paneId, data); // fire-and-forget
+    });
+
+    // macOS editing chords xterm drops (it ignores ⌘ combos), translated to the
+    // control bytes Claude Code's input and zsh both bind: ⌘⌫ → ^U (delete to
+    // line start), ⌘Z → ^_ (undo). Matched on `code`, not `key`, so a RU/HY
+    // layout still hits; preventDefault keeps the webview's own Edit-menu undo out.
+    const MAC_CHORDS: Record<string, string> = { Backspace: "\x15", KeyZ: "\x1f" };
+    term.attachCustomKeyEventHandler((e) => {
+      const bytes = MAC_CHORDS[e.code];
+      if (!bytes || !e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return true;
+      if (e.type === "keydown") {
+        e.preventDefault();
+        paneSendKeys(paneId, bytes);
+      }
+      return false;
     });
 
     // Host resizes no longer drive the terminal size (tmux does). The observer
@@ -446,6 +542,12 @@ export const XtermHost: Component<XtermHostProps> = (props) => {
       clearTimeout(rectWaitTimer);
       if (measureTimer) clearInterval(measureTimer);
       ro.disconnect();
+      hostEl.removeEventListener("wheel", markUserScroll, { capture: true });
+      hostEl.removeEventListener("pointerdown", markUserScroll, true);
+      hostEl.removeEventListener("keydown", markScrollKey, true);
+      csiJ.dispose();
+      scrollSub.dispose();
+      parsedSub.dispose();
       dataSub.dispose();
       unlistenData?.();
       term.dispose();

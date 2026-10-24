@@ -211,6 +211,16 @@ body,
   height: 100%;
   margin: 0;
 }
+/* The shell never scrolls (see pageScrollGuard.ts). The viewport takes html's
+   `hidden`; body/#root get `clip` so they never become scroll boxes of their
+   own that a focus reveal could shift unseen. */
+html {
+  overflow: hidden;
+}
+body,
+#root {
+  overflow: clip;
+}
 body {
   background: var(--bg-0);
   color: var(--fg);
@@ -292,6 +302,16 @@ button {
   background: var(--bg-active);
   border-color: var(--border-strong);
   color: var(--fg);
+}
+/* Drag-to-reorder: the dragged chip dims; a bar marks where it would land. */
+.tab-chip.dragging {
+  opacity: 0.5;
+}
+.tab-chip.drop-before {
+  box-shadow: -3px 0 0 -1px var(--focus);
+}
+.tab-chip.drop-after {
+  box-shadow: 3px 0 0 -1px var(--focus);
 }
 
 .tab-dot {
@@ -541,6 +561,16 @@ button {
 .pane.dead {
   opacity: 0.8;
 }
+/* A tab chip is being dragged over this pane: dropping joins the tab here. */
+.pane.drop-target {
+  border-color: var(--focus);
+  border-style: dashed;
+  box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--focus) 12%, transparent);
+}
+body.tab-dragging,
+body.tab-dragging * {
+  cursor: grabbing !important;
+}
 
 .pane-toolbar {
   display: flex;
@@ -556,15 +586,10 @@ button {
 
 .pane-title {
   color: var(--fg);
-  max-width: 220px;
+  max-width: 420px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.pane-id {
-  color: var(--fg-faint);
-  font-family: var(--mono);
-  font-size: 10px;
 }
 .toolbar-spacer {
   flex: 1 1 auto;
@@ -616,16 +641,6 @@ button {
   background: var(--danger);
   border-color: var(--danger);
   color: var(--on-accent);
-}
-/* A1 — narrow caret next to "Launch CC" that opens the model/flags dialog
-   (⌥-click on the main button does the same). */
-.tb-caret {
-  width: 15px;
-  padding: 0;
-  margin-left: -4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .pane-body {

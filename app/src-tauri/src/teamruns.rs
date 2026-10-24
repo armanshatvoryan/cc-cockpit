@@ -98,7 +98,38 @@ pub fn load_team_runs() -> Result<Vec<TeamRun>, String> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| "HOME not set".to_string())?;
-    Ok(load_team_runs_at(&home))
+    let mut runs = load_team_runs_at(&home);
+    if let Some(started) = tmux_server_started_ms() {
+        forget_stale_panes(&mut runs, started);
+    }
+    Ok(runs)
+}
+
+/// Epoch-ms start time of the cockpit tmux server, None when it isn't running.
+fn tmux_server_started_ms() -> Option<u64> {
+    let out = crate::tmux::tmux(&["display-message", "-p", "-t", crate::tmux::SESSION, "#{start_time}"]).ok()?;
+    if !out.ok() {
+        return None;
+    }
+    out.trimmed().parse::<u64>().ok().map(|secs| secs * 1000)
+}
+
+/// tmux numbers panes from `%0` again on every server start, so a run whose
+/// `config.json` was last written before the current server started cannot own
+/// any live pane — yet its `%N` ids collide with new panes (a fresh pane `%8`
+/// would show up as Aug's dead `impl-task-7`). Drop those links; `"leader"` and
+/// other non-pane values stay.
+pub fn forget_stale_panes(runs: &mut [TeamRun], server_started_ms: u64) {
+    for run in runs.iter_mut() {
+        if run.modified_at.is_some_and(|m| m >= server_started_ms) {
+            continue;
+        }
+        for m in run.members.iter_mut() {
+            if m.tmux_pane_id.as_deref().is_some_and(|p| p.starts_with('%')) {
+                m.tmux_pane_id = None;
+            }
+        }
+    }
 }
 
 /// Testable core: read all `~/.claude/teams/session-*/` under an injectable
@@ -469,6 +500,27 @@ mod tests {
         assert_eq!(worker.agent_type, "dev-agent");
         assert_eq!(worker.model.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(worker.color.as_deref(), Some("blue"));
+    }
+
+    #[test]
+    fn forget_stale_panes_drops_pane_ids_from_runs_older_than_the_server() {
+        let sb = Sandbox::new("stale-panes");
+        sb.write("home/.claude/teams/session-old/config.json", LIVE_CONFIG);
+        sb.write("home/.claude/teams/session-new/config.json", LIVE_CONFIG);
+        let mut runs = load_team_runs_at(&sb.home());
+        let started = 1_000_000;
+        for r in runs.iter_mut() {
+            r.modified_at = Some(if r.session_id == "session-old" { started - 1 } else { started });
+        }
+        forget_stale_panes(&mut runs, started);
+        let pane = |id: &str, name: &str| {
+            let run = runs.iter().find(|r| r.session_id == id).unwrap();
+            let m = run.members.iter().find(|m| m.name == name).unwrap();
+            m.tmux_pane_id.clone()
+        };
+        assert_eq!(pane("session-old", "worker"), None);
+        assert_eq!(pane("session-old", "team-lead").as_deref(), Some("leader"));
+        assert_eq!(pane("session-new", "worker").as_deref(), Some("%1"));
     }
 
     #[test]

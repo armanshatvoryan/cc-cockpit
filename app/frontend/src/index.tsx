@@ -11,6 +11,9 @@ import "./styles.css";
 // user's first painted frame is already light. Listed here rather than left to
 // the component graph so the ordering is explicit and survives a refactor.
 import "./theme";
+import { installPageScrollGuard } from "./pageScrollGuard";
+
+installPageScrollGuard();
 
 const root = document.getElementById("root");
 if (root) render(() => <App />, root);
