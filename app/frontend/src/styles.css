@@ -211,6 +211,16 @@ body,
   height: 100%;
   margin: 0;
 }
+/* The shell never scrolls (see pageScrollGuard.ts). The viewport takes html's
+   `hidden`; body/#root get `clip` so they never become scroll boxes of their
+   own that a focus reveal could shift unseen. */
+html {
+  overflow: hidden;
+}
+body,
+#root {
+  overflow: clip;
+}
 body {
   background: var(--bg-0);
   color: var(--fg);
